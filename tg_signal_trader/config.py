@@ -22,6 +22,7 @@ class ProviderConfig(BaseModel):
     max_open_signals: int = 2
     max_legs_open: int = 8
     daily_loss_stop_pct: float = 5.0
+    ignore_patterns: list[str] = Field(default_factory=list)   # regexes; matching management messages are journaled, never classified
     expected_login: int = 0             # refuse to send anything unless state.json reports this login (0 = any)
     live: bool = False                  # must be true to send commands to a REAL account; requires expected_login
 
@@ -30,6 +31,14 @@ class ProviderConfig(BaseModel):
         if self.live and not self.expected_login:
             raise ValueError("live: true requires expected_login to be set to the exact account number")
         return self
+
+    @field_validator("ignore_patterns")
+    @classmethod
+    def _valid_regexes(cls, v: list[str]) -> list[str]:
+        import re
+        for pat in v:
+            re.compile(pat)
+        return v
 
     @field_validator("management_actions")
     @classmethod

@@ -200,3 +200,14 @@ def test_crosscheck_can_be_disabled():
     tr.cfg.llm.entry_crosscheck = False
     inbox(store, ENTRY, 105); tr.tick(); tr.tick()
     assert store.get_run("wolves:105").state == RunState.ACTIVE and ("entry", ENTRY) not in tr.classifier.calls
+
+
+def test_ignore_patterns_short_circuit_boilerplate():
+    boiler = "You can put your stop-loss to break-even if you wish, or keep it running if you want to maximise the profit potential! ✔️"
+    tr, store, fb, _ = make(management={boiler: Classification(action="break_even", confidence=0.95)},
+                            ignore_patterns=[r"(?i)you can put your stop-?loss to break-?even if you wish"])
+    inbox(store, ENTRY, 110); tr.tick(); tr.tick()
+    inbox(store, boiler, 111, reply_to=110); tr.tick(); tr.tick()
+    assert ("management", boiler) not in tr.classifier.calls                       # never sent to the model
+    assert all(l.sl_current == 4341.0 for l in store.get_run("wolves:110").legs)    # no BE applied
+    assert any(e["kind"] == "management_ignored" for e in store.journal_tail())

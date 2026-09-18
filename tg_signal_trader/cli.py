@@ -54,7 +54,7 @@ def make_classifier(cfg: AppConfig, secrets: Secrets) -> Classifier:
     return ClaudeClassifier(cfg.llm.model, cfg.llm.timeout_sec, api_key=secrets.anthropic_api_key)
 
 
-def classify_eval(classifier: Classifier, provider: str, export_dir: Path, n: int, echo=print) -> dict[str, int]:
+def classify_eval(classifier: Classifier, provider: str, export_dir: Path, n: int, echo=print, ignore_patterns: list[str] | None = None) -> dict[str, int]:
     """Runs the last n non-entry provider messages through the classifier and prints each verdict."""
     from .export import read_export
     from .parsers import get_parser, looks_like_entry
@@ -63,8 +63,13 @@ def classify_eval(classifier: Classifier, provider: str, export_dir: Path, n: in
     by_id = {m.msg_id: m for m in msgs}
     parser = get_parser(provider)
     picked = [m for m in msgs if m.text.strip() and parser.parse(m, []).signal is None and not looks_like_entry(m.text)][-n:]
+    ignore = [__import__("re").compile(p) for p in ignore_patterns or []]
     counts: dict[str, int] = {}
     for m in picked:
+        if any(p.search(m.text) for p in ignore):
+            counts["ignored"] = counts.get("ignored", 0) + 1
+            echo(f"{'ignored':<15}       {m.text[:90].replace(chr(10), ' | ')}   [matches ignore_patterns]")
+            continue
         quoted = by_id.get(m.reply_to) if m.reply_to is not None else None
         ctx = None
         if quoted is not None:
@@ -205,7 +210,8 @@ def main(argv: list[str] | None = None) -> int:
         sym = next(iter(cfg.providers[a.provider].symbols.values()))
         print("\n".join(bridge_test(b, sym, allow_real=a.live))); return 0
     if a.cmd == "classify-eval":
-        classify_eval(make_classifier(cfg, Secrets.from_env()), a.provider, Path(a.export_dir), a.n); return 0
+        classify_eval(make_classifier(cfg, Secrets.from_env()), a.provider, Path(a.export_dir), a.n,
+                      ignore_patterns=cfg.providers[a.provider].ignore_patterns); return 0
     if a.cmd == "replay":
         from .replay import replay
         counts = replay(cfg, store, MockClassifier(), a.provider, Path(a.export_dir))

@@ -13,7 +13,9 @@ per TP) at `risk_pct_per_leg` of the account balance, and writes commands to the
 `MQL5/Files/signalbridge/commands.jsonl`. `SignalBridge.mq5` inside the terminal executes each
 command once and writes `results.jsonl` and `state.json`. Free-form management messages ("Delete
 this", "im BE", "Move SL 4412") go through a Claude classifier; only `close_all`, `cancel_pending`,
-`move_sl` and `break_even` are executed, and only above the confidence threshold.
+`move_sl` and `break_even` are executed, and only above the confidence threshold. Known boilerplate
+(e.g. Lewis's "you can put your stop-loss to break-even if you wish" after TP1) is listed in
+`ignore_patterns` and never reaches the model.
 
 Entries are cross-checked: with `llm.entry_crosscheck: true` the model reads every template-parsed
 entry independently and the trade only goes ahead if both agree on symbol, side, entry type, SL and

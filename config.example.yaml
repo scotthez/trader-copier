@@ -10,6 +10,8 @@ providers:
     max_signal_age_sec: 120
     pending_ttl_hours: 24
     management_actions: [close_all, cancel_pending, move_sl, break_even]
+    ignore_patterns:                      # boilerplate that must never reach the classifier
+      - "(?i)you can put your stop-?loss to break-?even if you wish"
     max_open_signals: 2
     max_legs_open: 8
     daily_loss_stop_pct: 5.0

@@ -99,8 +99,15 @@ class Trader:
             elif looks_like_entry(msg.text):
                 self.store.journal(provider, "signal_unparsed", {"msg_id": msg.msg_id, "reason": result.rejected_reason or "llm declined", "text": msg.text[:300]})
             elif msg.text.strip():
-                self._handle_management(provider, msg, state, prev)
+                if self._ignored(provider, msg.text):
+                    self.store.journal(provider, "management_ignored", {"msg_id": msg.msg_id, "text": msg.text[:200]})
+                else:
+                    self._handle_management(provider, msg, state, prev)
             self.store.set_inbox_status(provider, msg.msg_id, "processed")
+
+    def _ignored(self, provider: str, text: str) -> bool:
+        import re
+        return any(re.search(p, text) for p in self.cfg.providers[provider].ignore_patterns)
 
     def _llm_entry(self, msg: InboxMessage, provider: str) -> Signal | None:
         ex = self.classifier.extract_entry(msg.text, provider)
