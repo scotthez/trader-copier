@@ -19,10 +19,12 @@ class OpenRouterClassifier:
             response_format=schema)
         return completion.choices[0].message.parsed
 
-    def classify_management(self, text: str, provider: str, ctx: RunContext | None, recent: list[str]) -> Classification:
+    def classify_management(self, text: str, provider: str, ctx: RunContext | None, recent: list[str], reply_text: str | None = None) -> Classification:
         context = ctx.model_dump_json() if ctx else "no open trade"
-        user = (f"Provider: {provider}\nOpen trade context: {context}\nRecent provider messages (oldest first):\n"
-                + "\n".join(f"- {r}" for r in recent) + f"\n\nMessage to classify:\n{text}")
+        user = (f"Provider: {provider}\nOpen trade context: {context}\n"
+                + (f"The message is a REPLY quoting this earlier message:\n{reply_text}\n" if reply_text else "The message is not a reply.\n")
+                + "Recent provider messages (oldest first):\n" + "\n".join(f"- {r}" for r in recent)
+                + f"\n\nMessage to classify:\n{text}")
         try:
             parsed = self._parse(MANAGEMENT_SYSTEM, user, Classification)
         except _ERRORS as e:

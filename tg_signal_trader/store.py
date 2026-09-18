@@ -39,6 +39,10 @@ class Store:
         rows = self.conn.execute("SELECT * FROM inbox WHERE provider=? AND status='new' ORDER BY msg_id", (provider,))
         return [self._row_msg(r) for r in rows]
 
+    def get_inbox(self, provider: str, msg_id: int) -> InboxMessage | None:
+        r = self.conn.execute("SELECT * FROM inbox WHERE provider=? AND msg_id=?", (provider, msg_id)).fetchone()
+        return self._row_msg(r) if r else None
+
     def set_inbox_status(self, provider: str, msg_id: int, status: str) -> None:
         self.conn.execute("UPDATE inbox SET status=? WHERE provider=? AND msg_id=?", (status, provider, msg_id))
 

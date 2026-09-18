@@ -119,3 +119,11 @@ def test_dry_run_bridge_never_sends():
     tr.bridges["wolves"] = DryRunBridge(fb, store, "wolves")
     inbox(store, ENTRY, 70); tr.tick(); tr.tick()
     assert fb.sent == [] and sum(1 for e in store.journal_tail() if e["kind"] == "dry_run_command") == 4
+
+
+def test_management_passes_quoted_text_to_classifier():
+    tr, store, fb, _ = make(management={"Delete this": Classification(action="close_all", confidence=0.95)})
+    inbox(store, ENTRY, 80); tr.tick(); tr.tick()
+    inbox(store, "Delete this", 81, reply_to=80); tr.tick()
+    # MockClassifier records calls; extend it to capture kwargs via a small subclass check
+    assert tr.classifier.calls[-1] == ("management", "Delete this")

@@ -58,12 +58,22 @@ def classify_eval(classifier: Classifier, provider: str, export_dir: Path, n: in
     """Runs the last n non-entry provider messages through the classifier and prints each verdict."""
     from .export import read_export
     from .parsers import get_parser, looks_like_entry
+    from .classifier import RunContext
     msgs = read_export(export_dir, provider)
+    by_id = {m.msg_id: m for m in msgs}
     parser = get_parser(provider)
     picked = [m for m in msgs if m.text.strip() and parser.parse(m, []).signal is None and not looks_like_entry(m.text)][-n:]
     counts: dict[str, int] = {}
     for m in picked:
-        c = classifier.classify_management(m.text, provider, None, [])
+        quoted = by_id.get(m.reply_to) if m.reply_to is not None else None
+        ctx = None
+        if quoted is not None:
+            sig = parser.parse(quoted, []).signal
+            if sig is not None:   # assume the quoted setup is live: pending if it was a limit, open otherwise
+                limit = sig.entry_type.value == "LIMIT"
+                ctx = RunContext(symbol=sig.symbol, side=sig.side.value, entry_type=sig.entry_type.value, entry_zone=sig.entry_zone,
+                                 sl=sig.sl, open_legs=0 if limit else 4, pending_legs=4 if limit else 0, sl_current=sig.sl)
+        c = classifier.classify_management(m.text, provider, ctx, [], reply_text=quoted.text[:600] if quoted else None)
         counts[c.action] = counts.get(c.action, 0) + 1
         echo(f"{c.action:<15} {c.confidence:.2f}  {m.text[:90].replace(chr(10), ' | ')}   [{c.reason[:60]}]")
     echo(f"--- {len(picked)} messages: {counts}")

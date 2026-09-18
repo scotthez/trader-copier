@@ -56,3 +56,13 @@ def test_mock_classifier():
 def test_schema_rejects_unknown_action():
     with pytest.raises(ValueError):
         Classification(action="secure_half", confidence=1.0)
+
+
+def test_reply_text_is_included_in_prompt():
+    c = FakeClient(Classification(action="cancel_pending", confidence=0.9))
+    ClaudeClassifier(model="m", timeout_sec=1, client=c).classify_management("Delete this", "wolves", None, [], reply_text="SELL Limit XAUUSD @4290 4295")
+    user = c.messages.calls[0]["messages"][0]["content"]
+    assert "REPLY quoting" in user and "SELL Limit XAUUSD @4290 4295" in user
+    c2 = FakeClient(Classification(action="none", confidence=0.9))
+    ClaudeClassifier(model="m", timeout_sec=1, client=c2).classify_management("x", "wolves", None, [])
+    assert "not a reply" in c2.messages.calls[0]["messages"][0]["content"]

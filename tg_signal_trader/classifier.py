@@ -40,6 +40,8 @@ Actions:
 - move_sl: move the stop loss to an explicit price the message states (put it in "price").
 - break_even: move the stop loss to the entry price ("BE", "break even", "risk free", "SL to entry").
 Typos and slang are common ("delte", "im be now", "sl 4412 guys"). "TP hit", "running +40 pips", "secure some profits" are NOT actions → "none".
+When the message is a reply, the quoted message tells you which trade it is about: "delete this" quoting a limit/pending
+setup means cancel_pending; quoting a market entry or an active trade means close_all.
 confidence is your probability that the action is what the provider means for THIS trade."""
 
 ENTRY_SYSTEM = """Extract a trade signal from a Telegram message if, and only if, it clearly states a direction, a symbol,
@@ -49,7 +51,7 @@ If any of side, symbol, sl or three TPs is missing, set confidence to 0."""
 
 
 class Classifier(Protocol):
-    def classify_management(self, text: str, provider: str, ctx: RunContext | None, recent: list[str]) -> Classification: ...
+    def classify_management(self, text: str, provider: str, ctx: RunContext | None, recent: list[str], reply_text: str | None = None) -> Classification: ...
     def extract_entry(self, text: str, provider: str) -> EntryExtraction | None: ...
 
 
@@ -66,10 +68,12 @@ class ClaudeClassifier:
             model=self.model, max_tokens=1024, system=system,
             messages=[{"role": "user", "content": user}], output_format=schema).parsed_output
 
-    def classify_management(self, text: str, provider: str, ctx: RunContext | None, recent: list[str]) -> Classification:
+    def classify_management(self, text: str, provider: str, ctx: RunContext | None, recent: list[str], reply_text: str | None = None) -> Classification:
         context = ctx.model_dump_json() if ctx else "no open trade"
-        user = (f"Provider: {provider}\nOpen trade context: {context}\nRecent provider messages (oldest first):\n"
-                + "\n".join(f"- {r}" for r in recent) + f"\n\nMessage to classify:\n{text}")
+        user = (f"Provider: {provider}\nOpen trade context: {context}\n"
+                + (f"The message is a REPLY quoting this earlier message:\n{reply_text}\n" if reply_text else "The message is not a reply.\n")
+                + "Recent provider messages (oldest first):\n" + "\n".join(f"- {r}" for r in recent)
+                + f"\n\nMessage to classify:\n{text}")
         try:
             return self._parse(MANAGEMENT_SYSTEM, user, Classification)
         except _SDK_ERRORS as e:
@@ -88,7 +92,7 @@ class MockClassifier:
         self.entries = entries or {}
         self.calls: list[tuple[str, str]] = []
 
-    def classify_management(self, text: str, provider: str, ctx: RunContext | None, recent: list[str]) -> Classification:
+    def classify_management(self, text: str, provider: str, ctx: RunContext | None, recent: list[str], reply_text: str | None = None) -> Classification:
         self.calls.append(("management", text))
         return self.management.get(text, NONE)
 

@@ -171,7 +171,9 @@ class Trader:
         ctx = RunContext(symbol=run.signal.symbol, side=run.signal.side.value, entry_type=run.signal.entry_type.value,
                          entry_zone=run.signal.entry_zone, sl=run.signal.sl, open_legs=len(run.open_legs()),
                          pending_legs=len(run.pending_legs()), sl_current=max((l.sl_current for l in run.open_legs()), default=run.signal.sl))
-        c = self.classifier.classify_management(msg.text, provider, ctx, [p.text[:200] for p in prev])
+        quoted = self.store.get_inbox(provider, msg.reply_to) if msg.reply_to is not None else None
+        c = self.classifier.classify_management(msg.text, provider, ctx, [p.text[:200] for p in prev],
+                                                reply_text=quoted.text[:600] if quoted else None)
         executable = c.action != "none" and c.confidence >= self.cfg.llm.confidence_threshold and c.action in cfg.management_actions and state is not None
         self.store.save_classification(provider, msg.msg_id, msg.text, c.action, c.price, c.confidence, c.reason, executable)
         if not executable:
