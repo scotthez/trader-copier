@@ -14,7 +14,7 @@ from .trader import Trader
 
 def replay(cfg: AppConfig, store: Store, classifier: Classifier, provider: str, export_dir: Path, bridge: Bridge | None = None) -> dict:
     pcfg = cfg.providers[provider].model_copy(update={"max_signal_age_sec": 10**9, "max_open_signals": 10**6, "max_legs_open": 10**6, "daily_loss_stop_pct": 10**6})
-    cfg = cfg.model_copy(update={"providers": {provider: pcfg}})
+    cfg = cfg.model_copy(update={"providers": {provider: pcfg}, "llm": cfg.llm.model_copy(update={"entry_crosscheck": False})})
     msgs = read_export(export_dir, provider, chat_id=pcfg.telegram_chat)
     parser = get_parser(provider)
     fb = FakeBridge(now_local=msgs[0].ts.replace(tzinfo=None) if msgs else datetime.now())

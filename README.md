@@ -15,6 +15,11 @@ command once and writes `results.jsonl` and `state.json`. Free-form management m
 this", "im BE", "Move SL 4412") go through a Claude classifier; only `close_all`, `cancel_pending`,
 `move_sl` and `break_even` are executed, and only above the confidence threshold.
 
+Entries are cross-checked: with `llm.entry_crosscheck: true` the model reads every template-parsed
+entry independently and the trade only goes ahead if both agree on symbol, side, entry type, SL and
+TP1–TP3 (a disagreement is journaled as `crosscheck:<field>`; if the model is unavailable the
+template result stands and `entry_crosscheck_unavailable` is journaled).
+
 TP ladder: L1 hit → nothing; L2 hit → L3/L4 stop to their entry; L3 hit → L4 stop to TP1; stops only
 ever move one way. `TP4: OPEN` → TP4 = TP3 + (TP3 − TP2). Limit/zone signals become pending orders
 at the near price for 24 h.

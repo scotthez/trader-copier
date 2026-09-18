@@ -26,6 +26,7 @@ llm:
   model: claude-opus-5            # claude-haiku-4-5 is the cheaper Anthropic option
   confidence_threshold: 0.8
   timeout_sec: 8
+  entry_crosscheck: true          # template-parsed entries must agree with the model's reading (symbol, side, type, SL, TP1-3)
 db_path: /var/lib/tg-signal-trader/trader.sqlite
 session_path: /var/lib/tg-signal-trader/tg_listener.session
 poll_interval_sec: 0.5

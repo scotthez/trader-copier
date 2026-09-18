@@ -45,6 +45,7 @@ class LlmConfig(BaseModel):
     model: str = "claude-opus-5"
     confidence_threshold: float = 0.8
     timeout_sec: float = 8.0
+    entry_crosscheck: bool = True        # template-parsed entries must agree with the model's reading before trading
 
     @field_validator("provider")
     @classmethod

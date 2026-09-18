@@ -155,3 +155,48 @@ def test_armed_live_account_trades():
     fb.account.trade_mode = "REAL"
     inbox(store, ENTRY, 93); tr.tick(); tr.tick()
     assert len(fb.sent) == 4 and store.get_run("wolves:93").state == RunState.ACTIVE
+
+
+def _ex(**kw):
+    base = dict(symbol="XAUUSD", side="BUY", entry_type="MARKET", entry_zone=[], sl=4341, tps=[4353, 4357, 4362, None], confidence=0.95)
+    base.update(kw)
+    return EntryExtraction(**base)
+
+
+def test_crosscheck_agreement_trades():
+    tr, store, fb, _ = make(entries={ENTRY: _ex()})
+    inbox(store, ENTRY, 100); tr.tick(); tr.tick()
+    assert store.get_run("wolves:100").state == RunState.ACTIVE and ("entry", ENTRY) in tr.classifier.calls
+    assert any(e["kind"] == "entry_crosscheck_ok" for e in store.journal_tail())
+
+
+def test_crosscheck_mismatch_rejects():
+    tr, store, fb, _ = make(entries={ENTRY: _ex(sl=4314)})           # model read the SL differently
+    inbox(store, ENTRY, 101); tr.tick()
+    run = store.get_run("wolves:101")
+    assert run.state == RunState.REJECTED and fb.sent == []
+    ev = next(e for e in store.journal_tail() if e["kind"] == "signal_rejected")
+    assert "crosscheck:sl" in ev["detail"]["reasons"] and ev["detail"]["crosscheck"]["model"]["sl"] == 4314
+
+
+def test_crosscheck_low_confidence_or_wrong_side_rejects():
+    tr, store, fb, _ = make(entries={ENTRY: _ex(side="SELL")})
+    inbox(store, ENTRY, 102); tr.tick()
+    assert "crosscheck:side" in next(e for e in store.journal_tail() if e["kind"] == "signal_rejected")["detail"]["reasons"]
+    tr2, store2, fb2, _ = make(entries={ENTRY: _ex(confidence=0.3)})
+    inbox(store2, ENTRY, 103); tr2.tick()
+    assert "crosscheck:confidence" in next(e for e in store2.journal_tail() if e["kind"] == "signal_rejected")["detail"]["reasons"]
+
+
+def test_crosscheck_unavailable_falls_back_to_template():
+    tr, store, fb, _ = make()                                            # MockClassifier returns None → unavailable
+    inbox(store, ENTRY, 104); tr.tick(); tr.tick()
+    assert store.get_run("wolves:104").state == RunState.ACTIVE
+    assert any(e["kind"] == "entry_crosscheck_unavailable" for e in store.journal_tail())
+
+
+def test_crosscheck_can_be_disabled():
+    tr, store, fb, _ = make(entries={ENTRY: _ex(sl=4314)})
+    tr.cfg.llm.entry_crosscheck = False
+    inbox(store, ENTRY, 105); tr.tick(); tr.tick()
+    assert store.get_run("wolves:105").state == RunState.ACTIVE and ("entry", ENTRY) not in tr.classifier.calls

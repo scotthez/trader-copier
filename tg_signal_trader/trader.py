@@ -147,18 +147,51 @@ class Trader:
         if self.store.kv_get(key) is None:
             self.store.kv_set(key, str(state.account.equity))
 
+    def _crosscheck(self, provider: str, sig: Signal) -> tuple[list[str], dict | None]:
+        """Independent model reading of a template-parsed entry. Returns (mismatched fields, model dump)."""
+        ex = self.classifier.extract_entry(sig.raw_text, provider)
+        if ex is None:
+            self.store.journal(provider, "entry_crosscheck_unavailable", {"signal": sig.id})
+            return [], None
+        model = ex.model_dump()
+        bad: list[str] = []
+        if ex.confidence < self.cfg.llm.confidence_threshold:
+            bad.append("crosscheck:confidence")
+        if canonical_symbol(ex.symbol) != sig.symbol:
+            bad.append("crosscheck:symbol")
+        if ex.side != sig.side.value:
+            bad.append("crosscheck:side")
+        if ex.entry_type != sig.entry_type.value:
+            bad.append("crosscheck:entry_type")
+        if abs(ex.sl - sig.sl) > 1e-6:
+            bad.append("crosscheck:sl")
+        model_tps = [t for t in ex.tps[:3] if t is not None]
+        if len(model_tps) < 3 or any(abs(a - b) > 1e-6 for a, b in zip(model_tps, sig.tps[:3])):
+            bad.append("crosscheck:tps")
+        if sig.entry_zone and ex.entry_zone and abs(ex.entry_zone[0] - sig.entry_zone[0]) > 1e-6:
+            bad.append("crosscheck:entry_zone")
+        return bad, model
+
     def _handle_signal(self, provider: str, sig: Signal, state: BridgeState | None) -> None:
         cfg, bridge = self.cfg.providers[provider], self.bridges[provider]
         run = SignalRun.from_signal(sig)
         broker_symbol = cfg.symbols.get(sig.symbol)
         spec = state.symbols.get(broker_symbol) if (state and broker_symbol) else None
         fails = validate_signal(sig, cfg, spec.quote() if spec else None, self.now_utc())
+        crosscheck: dict | None = None
+        if self.cfg.llm.entry_crosscheck and sig.parsed_by != "llm":
+            bad, model = self._crosscheck(provider, sig)
+            fails.extend(bad)
+            if model is not None:
+                crosscheck = {"template": {"symbol": sig.symbol, "side": sig.side.value, "entry_type": sig.entry_type.value, "sl": sig.sl, "tps": sig.tps}, "model": model}
+                if not bad:
+                    self.store.journal(provider, "entry_crosscheck_ok", {"signal": sig.id}, run_id=run.id)
         if spec is not None and not spec.trade_allowed:
             fails.append("trade_not_allowed")
         if fails:
             run.state = RunState.REJECTED
             self.store.save_run(run)
-            self.store.journal(provider, "signal_rejected", {"reasons": fails, "signal": sig.model_dump(mode="json")}, run_id=run.id)
+            self.store.journal(provider, "signal_rejected", {"reasons": fails, "signal": sig.model_dump(mode="json"), "crosscheck": crosscheck}, run_id=run.id)
             return
         guards = self.guard_reasons(provider, state)
         if guards:
