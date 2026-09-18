@@ -44,3 +44,8 @@ def test_secrets_from_env(monkeypatch):
     monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
     s = Secrets.from_env()
     assert s.telegram_api_id == 12345 and s.telegram_api_hash == "abc" and s.anthropic_api_key is None
+    monkeypatch.setenv("TELEGRAM_API_ID", "")
+    s = Secrets.from_env()
+    assert s.telegram_api_id is None
+    with pytest.raises(SystemExit):
+        s.require_telegram()

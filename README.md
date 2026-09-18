@@ -31,7 +31,9 @@ at the near price for 24 h.
    with each provider's `bridge_dir` = absolute Linux path of that terminal's
    `MQL5/Files/signalbridge` (find the data folder via *File → Open Data Folder*, then translate to
    the Wine path); `.env` with `TELEGRAM_API_ID`, `TELEGRAM_API_HASH` (my.telegram.org) and
-   `ANTHROPIC_API_KEY`.
+   `ANTHROPIC_API_KEY` — or, with `llm.provider: openrouter` in the config, `OPENROUTER_API_KEY` and
+   `OPENROUTER_MODEL` (e.g. `openai/gpt-5-mini`) instead. The `.env` next to the config file is loaded
+   automatically for local runs; systemd uses `EnvironmentFile`.
 4. `tg-trader resolve-chats` (interactive Telegram login the first time) → put the channel ids in
    `config.yaml`.
 5. Checks: `tg-trader status` (state age < 1 s, right login, symbols visible) →
@@ -43,6 +45,8 @@ at the near price for 24 h.
 
 1. `tg-trader replay lewis <export dir>` and `... wolves ...` — review `tg-trader journal`.
 2. `tg-trader run --dry-run` for 3–5 trading days; read the journal and `classifications` daily.
+   `tg-trader classify-eval wolves <export dir> --n 40` shows how the configured model reads real
+   management messages (costs cents) — use it to compare models before trusting one.
 3. Demo accounts armed for a week.
 4. Live with `risk_pct_per_leg: 0.25`, then 1.0.
 

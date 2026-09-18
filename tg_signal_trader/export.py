@@ -9,7 +9,7 @@ from .models import InboxMessage
 _CHUNK = re.compile(r'(?=<div class="message (?:default|service))')
 _ID = re.compile(r'id="message(\d+)"')
 _DATE = re.compile(r'class="pull_right date details" title="([^"]+)"')
-_TEXT = re.compile(r'<div class="text">(.*?)</div>\s*(?:<div|</div>)', re.S)
+_TEXT = re.compile(r'<div class="text">(.*?)</div>', re.S)   # text divs never nest divs; reactions follow as a <span>
 _REPLY = re.compile(r'In reply to <a href="#go_to_message(\d+)"')
 _TAG = re.compile(r"<.*?>", re.S)
 

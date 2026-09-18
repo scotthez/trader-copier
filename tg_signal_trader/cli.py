@@ -5,13 +5,27 @@ from datetime import datetime
 from pathlib import Path
 from typing import Callable
 from .bridge import Bridge, Command, FileBridge
-from .classifier import ClaudeClassifier, MockClassifier
+from .classifier import ClaudeClassifier, Classifier, MockClassifier
 from .config import AppConfig, Secrets, load_config
 from .models import RunState
 from .store import Store
 from .trader import Trader, DryRunBridge
 
 log = logging.getLogger("tg-trader")
+
+
+def _load_dotenv(config_path: str) -> None:
+    """Loads KEY=VALUE lines from a .env beside the config file (or the cwd) without overriding real env vars."""
+    import os
+    for candidate in (Path(config_path).resolve().parent / ".env", Path(".env")):
+        if candidate.is_file():
+            for line in candidate.read_text(encoding="utf-8").splitlines():
+                line = line.strip()
+                if not line or line.startswith("#") or "=" not in line:
+                    continue
+                k, v = line.split("=", 1)
+                os.environ.setdefault(k.strip(), v.strip().strip('"').strip("'"))
+            return
 
 
 def _bridges(cfg: AppConfig, store: Store) -> dict[str, Bridge]:
@@ -26,6 +40,34 @@ def _persist_offsets(bridges: dict[str, Bridge], store: Store) -> None:
     for name, b in bridges.items():
         if isinstance(b, FileBridge):
             store.kv_set(f"results_offset:{name}", str(b.results_offset))
+
+
+def make_classifier(cfg: AppConfig, secrets: Secrets) -> Classifier:
+    """The configured LLM classifier: llm.provider selects Anthropic or OpenRouter."""
+    if cfg.llm.provider == "openrouter":
+        from .classifier_openrouter import OpenRouterClassifier
+        if not secrets.openrouter_api_key:
+            raise SystemExit("llm.provider is openrouter but OPENROUTER_API_KEY is not set")
+        return OpenRouterClassifier(secrets.openrouter_model or cfg.llm.model, cfg.llm.timeout_sec, api_key=secrets.openrouter_api_key)
+    if not secrets.anthropic_api_key:
+        log.warning("ANTHROPIC_API_KEY not set; the Anthropic SDK will use its own credential chain")
+    return ClaudeClassifier(cfg.llm.model, cfg.llm.timeout_sec, api_key=secrets.anthropic_api_key)
+
+
+def classify_eval(classifier: Classifier, provider: str, export_dir: Path, n: int, echo=print) -> dict[str, int]:
+    """Runs the last n non-entry provider messages through the classifier and prints each verdict."""
+    from .export import read_export
+    from .parsers import get_parser, looks_like_entry
+    msgs = read_export(export_dir, provider)
+    parser = get_parser(provider)
+    picked = [m for m in msgs if m.text.strip() and parser.parse(m, []).signal is None and not looks_like_entry(m.text)][-n:]
+    counts: dict[str, int] = {}
+    for m in picked:
+        c = classifier.classify_management(m.text, provider, None, [])
+        counts[c.action] = counts.get(c.action, 0) + 1
+        echo(f"{c.action:<15} {c.confidence:.2f}  {m.text[:90].replace(chr(10), ' | ')}   [{c.reason[:60]}]")
+    echo(f"--- {len(picked)} messages: {counts}")
+    return counts
 
 
 def bridge_ping(bridge: Bridge, timeout_sec: float, now_local: Callable[[], datetime] = datetime.now, sleep: Callable[[float], None] = time.sleep) -> float | None:
@@ -108,17 +150,19 @@ def main(argv: list[str] | None = None) -> int:
     rp = sub.add_parser("replay"); rp.add_argument("provider"); rp.add_argument("export_dir")
     sub.add_parser("resolve-chats")
     jn = sub.add_parser("journal"); jn.add_argument("--n", type=int, default=50)
+    ce = sub.add_parser("classify-eval"); ce.add_argument("provider"); ce.add_argument("export_dir"); ce.add_argument("--n", type=int, default=40)
     a = ap.parse_args(argv)
 
+    _load_dotenv(a.config)
     cfg = load_config(a.config)
     store = Store(cfg.db_path)
 
     if a.cmd == "listen":
         from .listener import run_listener
-        asyncio.run(run_listener(cfg, Secrets.from_env(), store)); return 0
+        asyncio.run(run_listener(cfg, Secrets.from_env().require_telegram(), store)); return 0
     if a.cmd == "resolve-chats":
         from .listener import resolve_chats
-        for title, cid in asyncio.run(resolve_chats(cfg, Secrets.from_env())):
+        for title, cid in asyncio.run(resolve_chats(cfg, Secrets.from_env().require_telegram())):
             print(f"{cid:>16}  {title}")
         return 0
     if a.cmd == "status":
@@ -141,13 +185,14 @@ def main(argv: list[str] | None = None) -> int:
             print("Re-run with --confirm on a DEMO account."); return 1
         sym = next(iter(cfg.providers[a.provider].symbols.values()))
         print("\n".join(bridge_test(b, sym))); return 0
+    if a.cmd == "classify-eval":
+        classify_eval(make_classifier(cfg, Secrets.from_env()), a.provider, Path(a.export_dir), a.n); return 0
     if a.cmd == "replay":
         from .replay import replay
         counts = replay(cfg, store, MockClassifier(), a.provider, Path(a.export_dir))
         print(counts); return 0
     if a.cmd == "run":
-        secrets = Secrets.from_env()
-        classifier = ClaudeClassifier(cfg.llm.model, cfg.llm.timeout_sec, api_key=secrets.anthropic_api_key)
+        classifier = make_classifier(cfg, Secrets.from_env())
         bridges = _bridges(cfg, store)
         real = bridges
         if a.dry_run:

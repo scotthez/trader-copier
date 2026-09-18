@@ -33,9 +33,17 @@ class ProviderConfig(BaseModel):
 
 
 class LlmConfig(BaseModel):
+    provider: str = "anthropic"          # anthropic | openrouter
     model: str = "claude-opus-5"
     confidence_threshold: float = 0.8
     timeout_sec: float = 8.0
+
+    @field_validator("provider")
+    @classmethod
+    def _known_provider(cls, v: str) -> str:
+        if v not in ("anthropic", "openrouter"):
+            raise ValueError("llm.provider must be 'anthropic' or 'openrouter'")
+        return v
 
 
 class AppConfig(BaseModel):
@@ -53,12 +61,22 @@ def load_config(path: str | Path) -> AppConfig:
 
 
 class Secrets(BaseModel):
-    telegram_api_id: int
-    telegram_api_hash: str
+    telegram_api_id: int | None = None       # required only by listen / resolve-chats
+    telegram_api_hash: str | None = None
     anthropic_api_key: str | None = None
+    openrouter_api_key: str | None = None
+    openrouter_model: str | None = None      # overrides llm.model when llm.provider is openrouter
 
     @classmethod
     def from_env(cls) -> "Secrets":
-        return cls(telegram_api_id=int(os.environ["TELEGRAM_API_ID"]),
-                   telegram_api_hash=os.environ["TELEGRAM_API_HASH"],
-                   anthropic_api_key=os.environ.get("ANTHROPIC_API_KEY") or None)
+        api_id = os.environ.get("TELEGRAM_API_ID", "").strip()
+        return cls(telegram_api_id=int(api_id) if api_id else None,
+                   telegram_api_hash=os.environ.get("TELEGRAM_API_HASH", "").strip() or None,
+                   anthropic_api_key=os.environ.get("ANTHROPIC_API_KEY") or None,
+                   openrouter_api_key=os.environ.get("OPENROUTER_API_KEY") or None,
+                   openrouter_model=os.environ.get("OPENROUTER_MODEL") or None)
+
+    def require_telegram(self) -> "Secrets":
+        if not self.telegram_api_id or not self.telegram_api_hash:
+            raise SystemExit("TELEGRAM_API_ID and TELEGRAM_API_HASH must be set (my.telegram.org → API development tools)")
+        return self
