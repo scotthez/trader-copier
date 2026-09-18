@@ -1,0 +1,15 @@
+[Unit]
+Description=tg-signal-trader Telegram listener
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+User=mt5
+WorkingDirectory=/opt/tg-signal-trader
+EnvironmentFile=/etc/tg-signal-trader.env
+ExecStart=/opt/tg-signal-trader/.venv/bin/tg-trader --config /etc/tg-signal-trader/config.yaml listen
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

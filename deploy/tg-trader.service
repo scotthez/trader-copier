@@ -1,0 +1,15 @@
+[Unit]
+Description=tg-signal-trader trader loop
+After=network-online.target tg-listener.service
+Wants=network-online.target
+
+[Service]
+User=mt5
+WorkingDirectory=/opt/tg-signal-trader
+EnvironmentFile=/etc/tg-signal-trader.env
+ExecStart=/opt/tg-signal-trader/.venv/bin/tg-trader --config /etc/tg-signal-trader/config.yaml run
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
