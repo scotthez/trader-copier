@@ -46,6 +46,7 @@ void OnTick()
          s = ReadState();
          AssertTrue(StringFind(s, "\"ts\":\"") == 1, "state: starts with ts");
          AssertTrue(StringFind(s, "\"login\":") > 0 && StringFind(s, "\"hedging\":true") > 0, "state: account block");
+         AssertTrue(StringFind(s, "\"trade_mode\":\"DEMO\"") > 0 || StringFind(s, "\"trade_mode\":\"REAL\"") > 0 || StringFind(s, "\"trade_mode\":\"CONTEST\"") > 0, "state: trade_mode reported");
          AssertTrue(StringFind(s, "\"" + _Symbol + "\":{\"bid\":") > 0, "state: symbol block");
          AssertTrue(StringFind(s, "\"trade_allowed\":true") > 0, "state: trade_allowed");
          AssertTrue(StringFind(s, "\"positions\":[]") > 0, "state: no positions yet");

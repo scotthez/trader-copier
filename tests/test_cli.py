@@ -61,3 +61,14 @@ def test_classify_eval_runs_classifier_over_non_entry_messages(tmp_path):
     lines = []
     counts = classify_eval(mc, "lewis", tmp_path, n=10, echo=lines.append)
     assert counts == {"none": 1} and [t for k, t in mc.calls] == ["TP1 HIT! ✔️"]
+
+
+def test_status_shows_arming_and_bridge_test_refuses_real():
+    cfg = AppConfig(providers={"wolves": ProviderConfig(telegram_chat=1, bridge_dir="/tmp/w", symbols={"XAUUSD": "XAUUSD"}, sl_range={"XAUUSD": (1, 60)})})
+    b = fb(); b.account.trade_mode = "REAL"
+    text = "\n".join(status_lines(cfg, Store(":memory:"), {"wolves": b}, now_local=lambda: LOCAL0))
+    assert "REAL" in text and "NOT ARMED" in text
+    lines = bridge_test(b, "XAUUSD", now_local=lambda: LOCAL0, sleep=lambda s: None)
+    assert b.sent == [] and "REAL" in lines[0]
+    lines = bridge_test(b, "XAUUSD", now_local=lambda: LOCAL0, sleep=lambda s: None, allow_real=True)
+    assert [c.type for c in b.sent] == ["open_market", "modify_sl", "close"]

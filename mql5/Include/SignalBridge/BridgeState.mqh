@@ -7,6 +7,12 @@ string TimeStr(const datetime t) { return TimeToString(t, TIME_DATE|TIME_SECONDS
 
 string PositionTypeName(const long t) { return (t == POSITION_TYPE_BUY) ? "BUY" : "SELL"; }
 
+string TradeModeName(const long m)
+{
+   switch((int)m) { case ACCOUNT_TRADE_MODE_DEMO: return "DEMO"; case ACCOUNT_TRADE_MODE_CONTEST: return "CONTEST"; case ACCOUNT_TRADE_MODE_REAL: return "REAL"; }
+   return "UNKNOWN";
+}
+
 string OrderTypeName(const long t)
 {
    switch((int)t)
@@ -49,6 +55,7 @@ bool WriteStateJson(const string dir, const string &symbols[], const ulong magic
       j.Key("equity");      j.Num(AccountInfoDouble(ACCOUNT_EQUITY));
       j.Key("margin_free"); j.Num(AccountInfoDouble(ACCOUNT_MARGIN_FREE));
       j.Key("hedging");     j.Bool(AccountInfoInteger(ACCOUNT_MARGIN_MODE) == ACCOUNT_MARGIN_MODE_RETAIL_HEDGING);
+      j.Key("trade_mode");  j.Str(TradeModeName(AccountInfoInteger(ACCOUNT_TRADE_MODE)));
    j.EndObject();
    j.Key("symbols"); j.BeginObject();
    for(int i = 0; i < ArraySize(symbols); i++)

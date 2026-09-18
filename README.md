@@ -41,6 +41,16 @@ at the near price for 24 h.
    on a DEMO account `tg-trader bridge-test lewis --confirm` (min-lot open / modify / close).
 6. Install `deploy/*.service`, `systemctl enable --now tg-listener tg-trader`.
 
+## Arming guard
+
+Every provider has `expected_login` and `live`. The trader sends **no** command — no entries, no
+ladder moves, no management — to a terminal whose `state.json` login differs from `expected_login`,
+or whose account is `REAL` while `live` is `false`; it journals `arming_blocked` instead, and
+`tg-trader status` shows `NOT ARMED`. Demo/contest accounts run with `live: false`. To go live on an
+account, set both `expected_login: <number>` and `live: true` for that provider — a stale or
+mistyped `bridge_dir` therefore cannot trade a real account. `bridge-test` refuses REAL accounts
+unless you pass `--live`.
+
 ## Before real money
 
 1. `tg-trader replay lewis <export dir>` and `... wolves ...` — review `tg-trader journal`.

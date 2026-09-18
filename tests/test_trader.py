@@ -127,3 +127,31 @@ def test_management_passes_quoted_text_to_classifier():
     inbox(store, "Delete this", 81, reply_to=80); tr.tick()
     # MockClassifier records calls; extend it to capture kwargs via a small subclass check
     assert tr.classifier.calls[-1] == ("management", "Delete this")
+
+
+def test_arming_blocks_real_account_until_live_true():
+    tr, store, fb, _ = make()
+    fb.account.trade_mode = "REAL"
+    inbox(store, ENTRY, 90); tr.tick(); tr.tick()
+    assert fb.sent == [] and store.get_run("wolves:90").state == RunState.REJECTED
+    assert any(e["kind"] == "guard_blocked" and "real_account_not_armed" in e["detail"]["reasons"] for e in store.journal_tail())
+    assert any(e["kind"] == "arming_blocked" for e in store.journal_tail())
+
+
+def test_arming_blocks_login_mismatch_everywhere():
+    tr, store, fb, _ = make(management={"Delete this": Classification(action="close_all", confidence=0.95)})
+    inbox(store, ENTRY, 91); tr.tick(); tr.tick()                       # placed while login matches (0 = any)
+    assert len(fb.sent) == 4
+    tr.cfg.providers["wolves"].expected_login = 999                      # now the terminal is the wrong account
+    inbox(store, "Delete this", 92, reply_to=91); tr.tick(); tr.tick()
+    assert len(fb.sent) == 4 and fb.read_state().positions != []       # no close was sent
+    assert any(e["kind"] == "management_skipped" and "login_mismatch" in str(e["detail"]) for e in store.journal_tail())
+    fb.hit_tp(fb.read_state().positions[1].ticket); fb.hit_tp(fb.read_state().positions[0].ticket); tr.tick(); tr.tick()
+    assert not any(c.type == "modify_sl" for c in fb.sent)             # ladder moves are not sent either
+
+
+def test_armed_live_account_trades():
+    tr, store, fb, _ = make(live=True, expected_login=1)
+    fb.account.trade_mode = "REAL"
+    inbox(store, ENTRY, 93); tr.tick(); tr.tick()
+    assert len(fb.sent) == 4 and store.get_run("wolves:93").state == RunState.ACTIVE

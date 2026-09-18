@@ -44,6 +44,19 @@ class Trader:
         self.now_utc = now_utc or (lambda: datetime.now(timezone.utc))
         self.now_local = now_local or datetime.now
         self.parsers = {p: get_parser(p) for p in cfg.providers}
+        self._blocked_notice: dict[str, str] = {}
+
+    # ---- arming ---------------------------------------------------------
+    def arming_block(self, provider: str, state: BridgeState | None) -> str | None:
+        """Why no command may be sent to this provider's terminal right now (None = armed)."""
+        if state is None:
+            return None
+        cfg = self.cfg.providers[provider]
+        if cfg.expected_login and state.account.login != cfg.expected_login:
+            return f"login_mismatch: terminal is {state.account.login}, config expects {cfg.expected_login}"
+        if state.account.trade_mode == "REAL" and not cfg.live:
+            return "real_account_not_armed: set live: true and expected_login for this provider"
+        return None
 
     # ---- loop -----------------------------------------------------------
     def tick(self) -> None:
@@ -51,15 +64,22 @@ class Trader:
             state = self.bridges[provider].read_state()
             if state is not None:
                 self._track_start_of_day(provider, state)
+            block = self.arming_block(provider, state)
+            if block and self._blocked_notice.get(provider) != block:
+                self._blocked_notice[provider] = block
+                self.store.journal(provider, "arming_blocked", {"reason": block, "login": state.account.login, "trade_mode": state.account.trade_mode})
+            elif not block:
+                self._blocked_notice.pop(provider, None)
             self.process_inbox(provider, state)
             self.sync(provider, state)
 
     def sync(self, provider: str, state: BridgeState | None) -> None:
         bridge, cfg = self.bridges[provider], self.cfg.providers[provider]
         results = bridge.read_results()
+        armed = self.arming_block(provider, state) is None
         for run in self.store.runs(provider, [RunState.PLACING, RunState.ACTIVE]):
             events = apply_results(run, results)
-            if state is not None:
+            if state is not None and armed:
                 events += sync_run(run, cfg, state, bridge, self.now_local())
             for e in events:
                 self.store.journal(provider, e.pop("kind"), e, run_id=run.id)
@@ -106,6 +126,9 @@ class Trader:
             return ["no_state"]
         if state.age_sec(self.now_local()) > STALE_STATE_SEC:
             reasons.append("terminal_stale")
+        block = self.arming_block(provider, state)
+        if block:
+            reasons.append(block.split(":")[0])
         live = self.store.runs(provider, [RunState.PLACING, RunState.ACTIVE])
         if len(live) >= cfg.max_open_signals:
             reasons.append("max_open_signals")
@@ -174,10 +197,12 @@ class Trader:
         quoted = self.store.get_inbox(provider, msg.reply_to) if msg.reply_to is not None else None
         c = self.classifier.classify_management(msg.text, provider, ctx, [p.text[:200] for p in prev],
                                                 reply_text=quoted.text[:600] if quoted else None)
-        executable = c.action != "none" and c.confidence >= self.cfg.llm.confidence_threshold and c.action in cfg.management_actions and state is not None
+        block = self.arming_block(provider, state)
+        executable = (c.action != "none" and c.confidence >= self.cfg.llm.confidence_threshold
+                      and c.action in cfg.management_actions and state is not None and block is None)
         self.store.save_classification(provider, msg.msg_id, msg.text, c.action, c.price, c.confidence, c.reason, executable)
         if not executable:
-            self.store.journal(provider, "management_skipped", {"msg_id": msg.msg_id, "classification": c.model_dump()}, run_id=run.id)
+            self.store.journal(provider, "management_skipped", {"msg_id": msg.msg_id, "classification": c.model_dump(), "arming": block}, run_id=run.id)
             return
         events = apply_action(run, c.action, c.price, state, bridge, cfg)
         self.store.save_run(run)

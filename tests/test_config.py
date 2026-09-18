@@ -49,3 +49,15 @@ def test_secrets_from_env(monkeypatch):
     assert s.telegram_api_id is None
     with pytest.raises(SystemExit):
         s.require_telegram()
+
+
+def test_live_requires_expected_login(tmp_path):
+    p = tmp_path / "c.yaml"
+    base = "providers:\n  lewis:\n    telegram_chat: 1\n    bridge_dir: /tmp/x\n    symbols: {XAUUSD: XAUUSD}\n    sl_range: {XAUUSD: [1, 60]}\n"
+    cfg = load_config((p.write_text(base), p)[1])
+    assert cfg.providers["lewis"].live is False and cfg.providers["lewis"].expected_login == 0
+    p.write_text(base + "    live: true\n")
+    with pytest.raises(ValueError):
+        load_config(p)
+    p.write_text(base + "    live: true\n    expected_login: 35186896\n")
+    assert load_config(p).providers["lewis"].live is True

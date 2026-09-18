@@ -103,7 +103,13 @@ def status_lines(cfg: AppConfig, store: Store, bridges: dict[str, Bridge], now_l
             continue
         age = st.age_sec(now_local())
         flag = "OK" if age <= 5 else "STALE"
-        lines.append(f"[{name}] {flag} age {age:.1f}s | login {st.account.login} | balance {st.account.balance:g} equity {st.account.equity:g} | hedging {st.account.hedging}")
+        if p.expected_login and st.account.login != p.expected_login:
+            armed = f"NOT ARMED (login mismatch, expected {p.expected_login})"
+        elif st.account.trade_mode == "REAL" and not p.live:
+            armed = "NOT ARMED (REAL account, live: false)"
+        else:
+            armed = "ARMED" if p.live else "armed (demo)"
+        lines.append(f"[{name}] {flag} age {age:.1f}s | login {st.account.login} {st.account.trade_mode} | {armed} | balance {st.account.balance:g} equity {st.account.equity:g} | hedging {st.account.hedging}")
         for sym, s in st.symbols.items():
             lines.append(f"    {sym}: bid {s.bid} ask {s.ask} step {s.volume_step} min {s.volume_min} tick_value {s.tick_value} trade_allowed {s.trade_allowed}")
         lines.append(f"    positions {len(st.positions)} orders {len(st.orders)}")
@@ -116,9 +122,12 @@ def status_lines(cfg: AppConfig, store: Store, bridges: dict[str, Bridge], now_l
     return lines
 
 
-def bridge_test(bridge: Bridge, symbol: str, now_local: Callable[[], datetime] = datetime.now, sleep: Callable[[float], None] = time.sleep) -> list[str]:
-    """Places a minimum-lot market BUY with SL/TP 1% away, moves the SL, closes it. Demo accounts only."""
+def bridge_test(bridge: Bridge, symbol: str, now_local: Callable[[], datetime] = datetime.now, sleep: Callable[[float], None] = time.sleep,
+                allow_real: bool = False) -> list[str]:
+    """Places a minimum-lot market BUY with SL/TP 1% away, moves the SL, closes it. Demo accounts only unless allow_real."""
     st = bridge.read_state()
+    if st.account.trade_mode == "REAL" and not allow_real:
+        return [f"REFUSED: account {st.account.login} is a REAL account; pass --live to test on it deliberately"]
     spec = st.symbols[symbol]
     stamp = now_local().strftime("%Y%m%d%H%M%S")
     out: list[str] = []
@@ -156,7 +165,7 @@ def main(argv: list[str] | None = None) -> int:
     r = sub.add_parser("run"); r.add_argument("--dry-run", action="store_true"); r.add_argument("--once", action="store_true")
     sub.add_parser("status")
     pp = sub.add_parser("bridge-ping"); pp.add_argument("provider"); pp.add_argument("--timeout", type=float, default=10)
-    bt = sub.add_parser("bridge-test"); bt.add_argument("provider"); bt.add_argument("--confirm", action="store_true")
+    bt = sub.add_parser("bridge-test"); bt.add_argument("provider"); bt.add_argument("--confirm", action="store_true"); bt.add_argument("--live", action="store_true", help="allow the test trade on a REAL account")
     rp = sub.add_parser("replay"); rp.add_argument("provider"); rp.add_argument("export_dir")
     sub.add_parser("resolve-chats")
     jn = sub.add_parser("journal"); jn.add_argument("--n", type=int, default=50)
@@ -194,7 +203,7 @@ def main(argv: list[str] | None = None) -> int:
         if not a.confirm:
             print("Re-run with --confirm on a DEMO account."); return 1
         sym = next(iter(cfg.providers[a.provider].symbols.values()))
-        print("\n".join(bridge_test(b, sym))); return 0
+        print("\n".join(bridge_test(b, sym, allow_real=a.live))); return 0
     if a.cmd == "classify-eval":
         classify_eval(make_classifier(cfg, Secrets.from_env()), a.provider, Path(a.export_dir), a.n); return 0
     if a.cmd == "replay":

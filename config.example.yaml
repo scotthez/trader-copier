@@ -13,6 +13,8 @@ providers:
     max_open_signals: 2
     max_legs_open: 8
     daily_loss_stop_pct: 5.0
+    expected_login: 0                     # the exact account number this terminal must be logged into (0 = any)
+    live: false                           # commands are refused on a REAL account until this is true (needs expected_login)
   wolves:
     telegram_chat: 0
     bridge_dir: /home/mt5/terminals/icontech/MQL5/Files/signalbridge

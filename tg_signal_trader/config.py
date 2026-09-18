@@ -2,7 +2,7 @@
 from __future__ import annotations
 import os
 from pathlib import Path
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 import yaml
 
 ALLOWED_ACTIONS = ["close_all", "cancel_pending", "move_sl", "break_even"]
@@ -22,6 +22,14 @@ class ProviderConfig(BaseModel):
     max_open_signals: int = 2
     max_legs_open: int = 8
     daily_loss_stop_pct: float = 5.0
+    expected_login: int = 0             # refuse to send anything unless state.json reports this login (0 = any)
+    live: bool = False                  # must be true to send commands to a REAL account; requires expected_login
+
+    @model_validator(mode="after")
+    def _live_requires_login(self) -> "ProviderConfig":
+        if self.live and not self.expected_login:
+            raise ValueError("live: true requires expected_login to be set to the exact account number")
+        return self
 
     @field_validator("management_actions")
     @classmethod

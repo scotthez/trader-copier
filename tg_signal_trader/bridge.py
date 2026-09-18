@@ -34,6 +34,7 @@ class SymbolSpec(BaseModel):
 
 class Account(BaseModel):
     login: int; balance: float; equity: float; margin_free: float; hedging: bool
+    trade_mode: str = "UNKNOWN"     # DEMO | CONTEST | REAL (from ACCOUNT_TRADE_MODE)
 
 
 class Position(BaseModel):
@@ -147,7 +148,7 @@ class FakeBridge:
 
     def __init__(self, now_local: datetime, balance: float = 10_000.0, login: int = 1):
         self.now = now_local
-        self.account = Account(login=login, balance=balance, equity=balance, margin_free=balance, hedging=True)
+        self.account = Account(login=login, balance=balance, equity=balance, margin_free=balance, hedging=True, trade_mode="DEMO")
         self.symbols: dict[str, SymbolSpec] = {}
         self.positions: list[Position] = []
         self.orders: list[Order] = []
