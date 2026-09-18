@@ -12,6 +12,12 @@ _DATE = re.compile(r'class="pull_right date details" title="([^"]+)"')
 _TEXT = re.compile(r'<div class="text">(.*?)</div>', re.S)   # text divs never nest divs; reactions follow as a <span>
 _REPLY = re.compile(r'In reply to <a href="#go_to_message(\d+)"')
 _TAG = re.compile(r"<.*?>", re.S)
+# Channels occasionally leak credentials (a provider once pasted an API key). Never let those into fixtures.
+_SECRET = re.compile(r"\b(sk-ant-[A-Za-z0-9_\-]{10,}|sk-[A-Za-z0-9_\-]{20,}|AIza[0-9A-Za-z_\-]{30,}|ghp_[A-Za-z0-9]{30,}|\d{8,10}:AA[A-Za-z0-9_\-]{30,})")
+
+
+def redact_secrets(text: str) -> str:
+    return _SECRET.sub(lambda m: m.group(0)[:6] + "[REDACTED]", text)
 
 
 def _file_order(p: Path) -> int:
@@ -33,7 +39,7 @@ def parse_export_html(text: str, provider: str, chat_id: int) -> list[InboxMessa
         body = ""
         if t:
             body = html.unescape(re.sub(r"<br\s*/?>", "\n", t.group(1)))
-            body = _TAG.sub("", body).strip()
+            body = redact_secrets(_TAG.sub("", body).strip())
         r = _REPLY.search(chunk)
         out.append(InboxMessage(msg_id=int(mid.group(1)), chat_id=chat_id, provider=provider,
                                 reply_to=int(r.group(1)) if r else None, text=body, ts=ts))

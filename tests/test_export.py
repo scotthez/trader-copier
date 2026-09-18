@@ -33,3 +33,10 @@ def test_fixture_round_trip(tmp_path):
     write_fixture(msgs, tmp_path / "f.jsonl")
     back = read_fixture(tmp_path / "f.jsonl")
     assert back == msgs
+
+
+def test_secrets_are_redacted_from_export_text():
+    from tg_signal_trader.export import redact_secrets
+    assert redact_secrets("use key sk-ant[REDACTED] now") == "use key sk-ant[REDACTED] now"
+    assert redact_secrets("bot 123456789:AAabcdefghijklmnopqrstuvwxyz0123456789abcd ok") == "bot 123456[REDACTED] ok"
+    assert redact_secrets("BUY XAUUSD @4347 SL 4341") == "BUY XAUUSD @4347 SL 4341"
