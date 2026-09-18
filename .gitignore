@@ -7,3 +7,4 @@ __pycache__/
 *.ex5
 *.log
 .DS_Store
+*.egg-info/
