@@ -1,0 +1,28 @@
+providers:
+  lewis:
+    telegram_chat: 0                      # run `tg-trader resolve-chats` to fill in
+    bridge_dir: /home/mt5/terminals/puprime/MQL5/Files/signalbridge
+    risk_pct_per_leg: 1.0
+    symbols: { NAS100: NAS100, XAUUSD: XAUUSD, GER40: GER40, EURGBP: EURGBP }
+    sl_range: { XAUUSD: [1, 60], NAS100: [5, 500], GER40: [5, 400], EURGBP: [0.0005, 0.02] }
+    market_entry_tolerance_pct: 0.3
+    limit_max_distance_pct: 1.0
+    max_signal_age_sec: 120
+    pending_ttl_hours: 24
+    management_actions: [close_all, cancel_pending, move_sl, break_even]
+    max_open_signals: 2
+    max_legs_open: 8
+    daily_loss_stop_pct: 5.0
+  wolves:
+    telegram_chat: 0
+    bridge_dir: /home/mt5/terminals/icontech/MQL5/Files/signalbridge
+    risk_pct_per_leg: 1.0
+    symbols: { XAUUSD: XAUUSD }
+    sl_range: { XAUUSD: [1, 60] }
+llm:
+  model: claude-opus-5            # claude-haiku-4-5 is the cheaper alternative
+  confidence_threshold: 0.8
+  timeout_sec: 8
+db_path: /var/lib/tg-signal-trader/trader.sqlite
+session_path: /var/lib/tg-signal-trader/tg_listener.session
+poll_interval_sec: 0.5
