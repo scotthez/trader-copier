@@ -3,6 +3,7 @@
 #include <SignalBridge/Json.mqh>
 #include <SignalBridge/Cursor.mqh>
 #include <SignalBridge/LineFile.mqh>
+#include <SignalBridge/JsonOut.mqh>
 
 void Test_Json()
 {
@@ -60,11 +61,27 @@ void Test_Cursor()
    FileDelete(CursorFileName("sbtest"));
 }
 
+void Test_JsonOut()
+{
+   CJsonOut j;
+   j.BeginObject();
+   j.Key("ts"); j.Str("2026.09.18 13:20:07");
+   j.Key("account"); j.BeginObject(); j.Key("login"); j.Int(35186896); j.Key("hedging"); j.Bool(true); j.EndObject();
+   j.Key("positions"); j.BeginArray();
+      j.BeginObject(); j.Key("ticket"); j.Int(1); j.Key("volume"); j.Num(0.12); j.Key("comment"); j.Str("sig:a\"b"); j.EndObject();
+      j.BeginObject(); j.Key("ticket"); j.Int(2); j.Key("volume"); j.Num(1.0); j.EndObject();
+   j.EndArray();
+   j.Key("orders"); j.BeginArray(); j.EndArray();
+   j.EndObject();
+   AssertEqStr("{\"ts\":\"2026.09.18 13:20:07\",\"account\":{\"login\":35186896,\"hedging\":true},\"positions\":[{\"ticket\":1,\"volume\":0.12,\"comment\":\"sig:a\\\"b\"},{\"ticket\":2,\"volume\":1}],\"orders\":[]}", j.Text(), "jsonout: nested document");
+}
+
 int OnInit()
 {
    Test_Json();
    Test_LineFile();
    Test_Cursor();
+   Test_JsonOut();
    TestSummary();
    return INIT_FAILED;
 }
