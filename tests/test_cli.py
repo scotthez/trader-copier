@@ -40,6 +40,24 @@ def test_bridge_test_opens_modifies_closes():
     assert b.sent[0].volume == 0.01 and all("OK" in l for l in lines)
 
 
+def test_bridge_test_falls_back_to_order_ticket_when_position_unresolved():
+    # Reproduces a real live/demo connection: the bridge's own deal-history/position lookup that
+    # resolves an open's r.position can lag the trade confirmation by a beat, coming back as 0, even
+    # though the order ticket — and the real position — already exist. bridge_test must fall back to
+    # r.order for the later modify_sl/close, exactly like the real ladder logic already does.
+    class LaggingPosition(FakeBridge):
+        def send(self, cmd):
+            super().send(cmd)
+            if cmd.type == "open_market":
+                self._results[-1] = self._results[-1].model_copy(update={"position": 0})
+    b = LaggingPosition(now_local=LOCAL0)
+    b.set_quote("XAUUSD", 4346.8, 4347.0)
+    lines = bridge_test(b, "XAUUSD", now_local=lambda: LOCAL0, sleep=lambda s: None)
+    assert [c.type for c in b.sent] == ["open_market", "modify_sl", "close"]
+    assert b.sent[1].position == b.sent[2].position != 0        # both target the real ticket, not 0
+    assert all("OK" in l for l in lines) and b.read_state().positions == []
+
+
 def test_make_classifier_selects_provider():
     from tg_signal_trader.cli import make_classifier
     from tg_signal_trader.config import Secrets, LlmConfig

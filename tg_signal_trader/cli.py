@@ -156,8 +156,14 @@ def bridge_test(bridge: Bridge, symbol: str, now_local: Callable[[], datetime] =
                      sl=round(spec.ask * 0.99, spec.digits), tp=round(spec.ask * 1.01, spec.digits), comment="sig:bridge-test:L1"))
     if not (r and r.ok):
         return out
-    step(Command(cmd_id=f"test:{stamp}:2", type="modify_sl", position=r.position, sl=round(spec.ask * 0.995, spec.digits)))
-    step(Command(cmd_id=f"test:{stamp}:3", type="close", position=r.position))
+    # On a fresh market fill, position and order share one ticket for a hedging account, but the
+    # bridge's own deal-history/position lookup that resolves r.position can lag the trade
+    # confirmation by a beat on a live/demo connection — r.order is returned immediately and
+    # reliably, so use it as the ticket whenever r.position wasn't resolved. Mirrors the same
+    # fallback the real ladder logic (ladder.apply_results) already relies on.
+    ticket = r.position or r.order
+    step(Command(cmd_id=f"test:{stamp}:2", type="modify_sl", position=ticket, sl=round(spec.ask * 0.995, spec.digits)))
+    step(Command(cmd_id=f"test:{stamp}:3", type="close", position=ticket))
     return out
 
 
