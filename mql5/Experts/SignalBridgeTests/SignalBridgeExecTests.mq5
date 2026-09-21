@@ -101,7 +101,22 @@ void OnTick()
          AssertTrue(r.ok, "exec: close ok");
          AssertTrue(!PositionSelectByTicket(g_pos), "exec: position gone");
          break; }
-      case 8: { // open_pending + cancel
+      case 8: { // precondition failures must never surface a PREVIOUS command's stale "done" text
+         // (regression: modify_sl/close on a position not found this attempt used to leak the last
+         // successful command's retcode/text — a genuine failure looked like "done at <price>").
+         BridgeCommand c; BridgeResult r;
+         ParseCommand("{\"cmd_id\":\"s1:L1:4\",\"type\":\"modify_sl\",\"position\":" + IntegerToString((long)g_pos) + ",\"sl\":1.0}", c);
+         g_exec.Execute(c, r);
+         AssertTrue(!r.ok, "exec: modify_sl on gone position fails");
+         AssertEqLong(0, r.retcode, "exec: modify_sl-on-gone retcode is the synthetic 0, not a stale trade retcode");
+         AssertTrue(StringFind(r.retcode_text, "not found") >= 0, "exec: modify_sl-on-gone reports not-found, not a stale 'done'");
+         ParseCommand("{\"cmd_id\":\"s1:L1:5\",\"type\":\"close\",\"position\":" + IntegerToString((long)g_pos) + "}", c);
+         g_exec.Execute(c, r);
+         AssertTrue(!r.ok, "exec: close on gone position fails");
+         AssertEqLong(0, r.retcode, "exec: close-on-gone retcode is the synthetic 0, not a stale trade retcode");
+         AssertTrue(StringFind(r.retcode_text, "not found") >= 0, "exec: close-on-gone reports not-found, not a stale 'done'");
+         break; }
+      case 9: { // open_pending + cancel
          BridgeCommand c; BridgeResult r;
          double px = NormalizeDouble(SymbolInfoDouble(_Symbol, SYMBOL_ASK) - 300 * _Point, _Digits);
          ParseCommand("{\"cmd_id\":\"s2:L1:1\",\"type\":\"open_pending\",\"symbol\":\"" + _Symbol + "\",\"side\":\"BUY\",\"volume\":0.10,\"price\":" + DoubleToString(px, _Digits) + ",\"sl\":" + DoubleToString(px - 500 * _Point, _Digits) + ",\"tp\":" + DoubleToString(px + 500 * _Point, _Digits) + ",\"comment\":\"sig:s2:L1\",\"expires_at\":\"" + TimeToString(TimeCurrent() + 86400, TIME_DATE|TIME_SECONDS) + "\"}", c);
@@ -112,13 +127,13 @@ void OnTick()
          AssertTrue(OrderGetInteger(ORDER_TIME_EXPIRATION) > TimeCurrent(), "exec: expiration set");
          g_ord = r.order;
          break; }
-      case 9: { BridgeCommand c; BridgeResult r;
+      case 10: { BridgeCommand c; BridgeResult r;
          ParseCommand("{\"cmd_id\":\"s2:L1:2\",\"type\":\"cancel\",\"order\":" + IntegerToString((long)g_ord) + "}", c);
          g_exec.Execute(c, r);
          AssertTrue(r.ok, "exec: cancel ok");
          AssertTrue(!OrderSelect(g_ord), "exec: order gone");
          break; }
-      case 10: { // failures are results, not crashes
+      case 11: { // failures are results, not crashes
          BridgeCommand c; BridgeResult r;
          ParseCommand("{\"cmd_id\":\"s3:L1:1\",\"type\":\"open_market\",\"symbol\":\"NOPE_XYZ\",\"side\":\"BUY\",\"volume\":0.10,\"sl\":0,\"tp\":0,\"comment\":\"x\"}", c);
          g_exec.Execute(c, r);

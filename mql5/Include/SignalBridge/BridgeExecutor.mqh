@@ -53,6 +53,13 @@ private:
    CTrade m_trade;
    int    m_max_retries;
    string m_tag;
+   // Set by a TryXxx() when it returns false WITHOUT calling any CTrade method this attempt
+   // (a precondition check failed — symbol/position/order not found, or an invalid side). Cleared
+   // before every attempt. When set, Execute() must not read m_trade's state: it would be leftover
+   // from a PREVIOUS, unrelated command and misreport this attempt (e.g. a modify_sl or close whose
+   // position genuinely has not appeared in the local position array yet — common on a live/demo
+   // connection — would otherwise be reported using the last successful command's own "done" text).
+   string m_precond_fail;
 
    bool Accepted()
    {
@@ -88,8 +95,8 @@ private:
    // One attempt of each type. Returns true when accepted.
    bool TryOpenMarket(const BridgeCommand &c)
    {
-      if(c.side != "BUY" && c.side != "SELL") return false;
-      if(!SymbolSelect(c.symbol, true)) return false;
+      if(c.side != "BUY" && c.side != "SELL") { m_precond_fail = "invalid side '" + c.side + "'"; return false; }
+      if(!SymbolSelect(c.symbol, true)) { m_precond_fail = "symbol '" + c.symbol + "' not found"; return false; }
       bool is_buy = (c.side == "BUY");
       double price = is_buy ? SymbolInfoDouble(c.symbol, SYMBOL_ASK) : SymbolInfoDouble(c.symbol, SYMBOL_BID);
       m_trade.SetTypeFillingBySymbol(c.symbol);
@@ -99,8 +106,8 @@ private:
    }
    bool TryOpenPending(const BridgeCommand &c)
    {
-      if(c.side != "BUY" && c.side != "SELL") return false;
-      if(!SymbolSelect(c.symbol, true)) return false;
+      if(c.side != "BUY" && c.side != "SELL") { m_precond_fail = "invalid side '" + c.side + "'"; return false; }
+      if(!SymbolSelect(c.symbol, true)) { m_precond_fail = "symbol '" + c.symbol + "' not found"; return false; }
       m_trade.SetTypeFillingBySymbol(c.symbol);
       ENUM_ORDER_TYPE_TIME tt = (c.expires_at > 0) ? ORDER_TIME_SPECIFIED : ORDER_TIME_GTC;
       double px = NormalizeStop(c.symbol, c.price), sl = NormalizeStop(c.symbol, c.sl), tp = NormalizeStop(c.symbol, c.tp);
@@ -110,7 +117,7 @@ private:
    }
    bool TryModifySl(const BridgeCommand &c)
    {
-      if(!PositionSelectByTicket(c.position)) return false;
+      if(!PositionSelectByTicket(c.position)) { m_precond_fail = "position #" + IntegerToString((long)c.position) + " not found (yet)"; return false; }
       string sym = PositionGetString(POSITION_SYMBOL);
       double cur_tp = PositionGetDouble(POSITION_TP), cur_sl = PositionGetDouble(POSITION_SL);
       double sl = NormalizeStop(sym, c.sl);
@@ -120,7 +127,7 @@ private:
    }
    bool TryClose(const BridgeCommand &c)
    {
-      if(!PositionSelectByTicket(c.position)) return false;
+      if(!PositionSelectByTicket(c.position)) { m_precond_fail = "position #" + IntegerToString((long)c.position) + " not found (yet)"; return false; }
       m_trade.PositionClose(c.position);
       if(!Accepted()) return false;
       // A DONE_PARTIAL retcode is the trade server's own word that volume remains open — retry.
@@ -132,7 +139,7 @@ private:
    }
    bool TryCancel(const BridgeCommand &c)
    {
-      if(!OrderSelect(c.order)) return false;
+      if(!OrderSelect(c.order)) { m_precond_fail = "order #" + IntegerToString((long)c.order) + " not found (yet)"; return false; }
       m_trade.OrderDelete(c.order);
       return Accepted();
    }
@@ -155,13 +162,24 @@ public:
       for(int attempt = 1; attempt <= m_max_retries; attempt++)
       {
          r.attempts = attempt;
+         m_precond_fail = "";
          bool ok = false;
          if(c.type == "open_market")       ok = TryOpenMarket(c);
          else if(c.type == "open_pending") ok = TryOpenPending(c);
          else if(c.type == "modify_sl")    ok = TryModifySl(c);
          else if(c.type == "close")        ok = TryClose(c);
          else if(c.type == "cancel")       ok = TryCancel(c);
-         Fill(r, ok);
+         if(m_precond_fail != "")
+         {
+            // No CTrade call happened this attempt — m_trade's state belongs to a previous command.
+            // retcode 0 is always retryable, so a "not found yet" precondition gets another chance
+            // to let the position/order catch up before this event is journaled as failed.
+            r.ok = false; r.retcode = 0; r.retcode_text = m_precond_fail; r.position = 0; r.order = 0; r.fill_price = 0;
+         }
+         else
+         {
+            Fill(r, ok);
+         }
          if(ok)
          {
             if(c.type == "close" || c.type == "modify_sl") { r.position = c.position; r.order = 0; }
