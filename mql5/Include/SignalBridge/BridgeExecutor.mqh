@@ -123,8 +123,12 @@ private:
       if(!PositionSelectByTicket(c.position)) return false;
       m_trade.PositionClose(c.position);
       if(!Accepted()) return false;
-      if(PositionSelectByTicket(c.position) && PositionGetDouble(POSITION_VOLUME) > 1e-8) return false;   // partial fill → retry
-      return true;
+      // A DONE_PARTIAL retcode is the trade server's own word that volume remains open — retry.
+      // Do NOT re-read the position array here: on a live/demo connection the terminal's local
+      // position cache can still show the (about-to-vanish) position for a moment after a genuine
+      // DONE close, which wrongly looked like "still open" and reported ok=false for a close that
+      // had already fully succeeded (seen live: retcode 10009 DONE with ok:false).
+      return (m_trade.ResultRetcode() != TRADE_RETCODE_DONE_PARTIAL);
    }
    bool TryCancel(const BridgeCommand &c)
    {
