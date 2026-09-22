@@ -270,6 +270,29 @@ def test_deferred_market_signal_is_not_revalidated_against_a_moved_quote():
     assert tr.classifier.calls.count(("entry", "TRADE SETUP: BUY XAUUSD")) == 1  # crosscheck not repeated on retry
 
 
+def test_slow_crosscheck_does_not_falsely_report_terminal_stale():
+    # Real-world miss (2026-09-22, Wolves XAUUSD, all afternoon): the entry crosscheck is a real LLM
+    # API call and routinely takes 8-14s. _handle_signal reads `state` once at the top of the tick,
+    # then blocks inside that crosscheck call BEFORE ever checking guard_reasons() against it — so by
+    # the time the terminal-health check runs, that same snapshot looks "stale" purely because of how
+    # long the crosscheck took, even though the EA kept writing state.json every 500ms the entire time
+    # and the bridge was perfectly healthy. Every signal needing a crosscheck was doomed to defer,
+    # over and over, until it aged out — regardless of the terminal's real health.
+    tr, store, fb, clock = make(entries={ENTRY: _ex()})
+    real_crosscheck = tr._crosscheck
+
+    def slow_crosscheck(provider, sig):
+        clock["local"] += timedelta(seconds=8)   # simulate an 8s LLM round trip...
+        fb.now += timedelta(seconds=8)           # ...during which the EA kept writing state.json
+        return real_crosscheck(provider, sig)
+
+    tr._crosscheck = slow_crosscheck
+    inbox(store, ENTRY, 300)
+    tr.tick(); tr.tick()
+    assert store.get_run("wolves:300").state == RunState.ACTIVE
+    assert not any(e["kind"] in ("guard_blocked", "signal_deferred") for e in store.journal_tail())
+
+
 def test_ignore_patterns_short_circuit_boilerplate():
     boiler = "You can put your stop-loss to break-even if you wish, or keep it running if you want to maximise the profit potential! ✔️"
     tr, store, fb, _ = make(management={boiler: Classification(action="break_even", confidence=0.95)},

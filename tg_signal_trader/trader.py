@@ -236,6 +236,14 @@ class Trader:
             self._signal_quote_cache.pop(sig.id, None)
             self._signal_crosscheck_cache.pop(sig.id, None)
             return True
+        # Re-read the bridge fresh right here rather than reusing `state` (captured at the top of this
+        # tick, before the crosscheck call above): the crosscheck is a real network round trip to the
+        # LLM and routinely takes several seconds, so by now `state` can look stale purely because of
+        # how long that call took — not because the terminal ever stopped writing state.json. Checking
+        # freshness against a just-taken read avoids blaming the terminal for our own processing time
+        # (live miss, Wolves XAUUSD, 2026-09-22: every crosscheck-needing signal that afternoon was
+        # deferred on a false terminal_stale and eventually timed out, never once for a real reason).
+        state = self.bridges[provider].read_state()
         guards = self.guard_reasons(provider, state)
         if guards:
             if set(guards) <= TRANSIENT_GUARDS:
