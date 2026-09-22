@@ -10,7 +10,7 @@ from .models import InboxMessage, LegState, RunState, Signal, SignalRun, Side, E
 from .normalize import canonical_symbol
 from .parsers import get_parser, looks_like_entry
 from .store import Store
-from .validation import validate_signal
+from .validation import validate_signal, Quote
 
 STALE_STATE_SEC = 5.0
 
@@ -55,6 +55,18 @@ class Trader:
         self.parsers = {p: get_parser(p) for p in cfg.providers}
         self._blocked_notice: dict[str, str] = {}
         self._deferred_logged: set[tuple[str, int]] = set()   # (provider, msg_id) already journaled as deferred
+        # The quote and entry-crosscheck result seen the FIRST time a signal is evaluated, kept per
+        # signal id across any TRANSIENT_GUARDS-triggered retries. validate_signal()'s sl/tp-side and
+        # distance checks reference the live quote when entry_zone is empty (a bare MARKET order), so
+        # re-running them fresh after a deferral re-litigates the signal against wherever price has
+        # since moved — in a fast market that falsely rejects a signal that was perfectly sane when it
+        # arrived (live miss, Lewis XAUUSD, 2026-09-22: rejected 35s later as "tp_wrong_side" after gold
+        # spiked through the ladder during two terminal_stale retries). validate_signal() itself still
+        # runs fresh on every attempt so its own time-based 'stale' check (and trade_not_allowed) keep
+        # working as the real backstop; only the price reference and the (costly, deterministic) LLM
+        # crosscheck are frozen. Entries cleared once the run is finalised either way.
+        self._signal_quote_cache: dict[str, Quote] = {}
+        self._signal_crosscheck_cache: dict[str, tuple[list[str], dict | None]] = {}
 
     # ---- arming ---------------------------------------------------------
     def arming_block(self, provider: str, state: BridgeState | None) -> str | None:
@@ -197,10 +209,19 @@ class Trader:
         run = SignalRun.from_signal(sig)
         broker_symbol = cfg.symbols.get(sig.symbol)
         spec = state.symbols.get(broker_symbol) if (state and broker_symbol) else None
-        fails = validate_signal(sig, cfg, spec.quote() if spec else None, self.now_utc())
+        live_quote = spec.quote() if spec else None
+        if live_quote is not None:
+            quote = self._signal_quote_cache.setdefault(sig.id, live_quote)
+        else:
+            quote = self._signal_quote_cache.get(sig.id)
+        fails = validate_signal(sig, cfg, quote, self.now_utc())
         crosscheck: dict | None = None
         if self.cfg.llm.entry_crosscheck and sig.parsed_by != "llm":
-            bad, model = self._crosscheck(provider, sig)
+            cached = self._signal_crosscheck_cache.get(sig.id)
+            if cached is None:
+                cached = self._crosscheck(provider, sig)
+                self._signal_crosscheck_cache[sig.id] = cached
+            bad, model = cached
             fails.extend(bad)
             if model is not None:
                 crosscheck = {"template": {"symbol": sig.symbol, "side": sig.side.value, "entry_type": sig.entry_type.value, "sl": sig.sl, "tps": sig.tps}, "model": model}
@@ -212,6 +233,8 @@ class Trader:
             run.state = RunState.REJECTED
             self.store.save_run(run)
             self.store.journal(provider, "signal_rejected", {"reasons": fails, "signal": sig.model_dump(mode="json"), "crosscheck": crosscheck}, run_id=run.id)
+            self._signal_quote_cache.pop(sig.id, None)
+            self._signal_crosscheck_cache.pop(sig.id, None)
             return True
         guards = self.guard_reasons(provider, state)
         if guards:
@@ -224,12 +247,16 @@ class Trader:
             run.state = RunState.REJECTED
             self.store.save_run(run)
             self.store.journal(provider, "guard_blocked", {"reasons": guards, "signal": sig.model_dump(mode="json")}, run_id=run.id)
+            self._signal_quote_cache.pop(sig.id, None)
+            self._signal_crosscheck_cache.pop(sig.id, None)
             return True
         events = place_run(run, cfg, state, bridge, self.now_local())
         self.store.save_run(run)
         self.store.journal(provider, "signal_accepted", {"signal": sig.model_dump(mode="json"), "volumes": [l.volume for l in run.legs]}, run_id=run.id)
         for e in events:
             self.store.journal(provider, e.pop("kind"), e, run_id=run.id)
+        self._signal_quote_cache.pop(sig.id, None)
+        self._signal_crosscheck_cache.pop(sig.id, None)
         return True
 
     # ---- management -----------------------------------------------------

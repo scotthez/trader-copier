@@ -1,6 +1,6 @@
 from datetime import datetime, timedelta, timezone
 from tg_signal_trader.config import AppConfig, ProviderConfig
-from tg_signal_trader.models import InboxMessage, LegState, RunState
+from tg_signal_trader.models import InboxMessage, LegState, RunState, Signal, Side, EntryType
 from tg_signal_trader.bridge import FakeBridge
 from tg_signal_trader.store import Store
 from tg_signal_trader.classifier import MockClassifier, Classification, EntryExtraction
@@ -244,6 +244,30 @@ def test_signal_that_never_recovers_eventually_rejected_as_stale():
     assert run.state == RunState.REJECTED
     ev = next(e for e in store.journal_tail() if e["kind"] == "signal_rejected")
     assert "stale" in ev["detail"]["reasons"]
+
+
+def test_deferred_market_signal_is_not_revalidated_against_a_moved_quote():
+    # Reproduces a real live miss (2026-09-22, Lewis XAUUSD): a bare MARKET signal (no entry_zone,
+    # so validate_signal's sl/tp-side checks reference the LIVE quote) was deferred once for
+    # terminal_stale, then re-validated on each retry against whatever the quote had become by then.
+    # Gold spiked hard during the ~35s the retries spanned, running straight through the tight TP
+    # ladder — so by the final retry, TP1-TP3 were now BELOW the live quote for a BUY, and the
+    # perfectly good signal was permanently rejected as "tp_wrong_side". validate_signal (and the
+    # entry crosscheck) must run once per signal and be cached, not re-litigated against a moving
+    # target every time a transient guard forces a retry.
+    tr, store, fb, clock = make(entries={"TRADE SETUP: BUY XAUUSD": _ex()})   # defaults already match sig below
+    sig = Signal(id="wolves:200", provider="wolves", symbol="XAUUSD", side=Side.BUY, entry_type=EntryType.MARKET,
+                 entry_zone=[], sl=4341.0, tps=[4353.0, 4357.0, 4362.0, 4367.0], received_at=UTC0,
+                 raw_text="TRADE SETUP: BUY XAUUSD", telegram_msg_id=200)
+    clock["local"] = LOCAL0 + timedelta(seconds=10)             # terminal reads stale: first attempt defers
+    assert tr._handle_signal("wolves", sig, fb.read_state()) is False
+    assert store.get_run("wolves:200") is None
+    fb.set_quote("XAUUSD", 4364.8, 4365.0)                      # price has since rallied straight through every TP
+    fb.now = clock["local"]                                     # terminal catches up: no longer stale
+    assert tr._handle_signal("wolves", sig, fb.read_state()) is True
+    tr.sync("wolves", fb.read_state())
+    assert store.get_run("wolves:200").state == RunState.ACTIVE  # validated once, against the original quote
+    assert tr.classifier.calls.count(("entry", "TRADE SETUP: BUY XAUUSD")) == 1  # crosscheck not repeated on retry
 
 
 def test_ignore_patterns_short_circuit_boilerplate():
