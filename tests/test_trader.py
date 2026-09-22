@@ -202,6 +202,50 @@ def test_crosscheck_can_be_disabled():
     assert store.get_run("wolves:105").state == RunState.ACTIVE and ("entry", ENTRY) not in tr.classifier.calls
 
 
+def test_terminal_stale_defers_then_places_once_fresh():
+    tr, store, fb, clock = make()
+    clock["local"] = LOCAL0 + timedelta(seconds=10)          # terminal state (still stamped LOCAL0) now reads stale
+    inbox(store, ENTRY, 120); tr.tick()
+    assert store.get_run("wolves:120") is None               # deferred, not rejected: no run created yet
+    assert store.new_inbox("wolves") != []                   # message left 'new' so it is retried
+    assert any(e["kind"] == "signal_deferred" and "terminal_stale" in e["detail"]["reasons"] for e in store.journal_tail())
+    fb.now = clock["local"]                                  # terminal catches up
+    tr.tick(); tr.tick()
+    assert store.get_run("wolves:120").state == RunState.ACTIVE
+
+
+def test_terminal_stale_only_defers_once_per_message():
+    tr, store, fb, clock = make()
+    clock["local"] = LOCAL0 + timedelta(seconds=10)
+    inbox(store, ENTRY, 121); tr.tick(); tr.tick(); tr.tick()
+    assert sum(1 for e in store.journal_tail() if e["kind"] == "signal_deferred") == 1
+
+
+def test_permanent_guard_still_rejects_immediately_even_when_terminal_is_stale():
+    tr, store, fb, clock = make()
+    tr.cfg.providers["wolves"].expected_login = 999           # wrong account: not a transient condition
+    clock["local"] = LOCAL0 + timedelta(seconds=10)            # ALSO stale, mixed with a permanent guard
+    inbox(store, ENTRY, 122); tr.tick()
+    run = store.get_run("wolves:122")
+    assert run is not None and run.state == RunState.REJECTED and fb.sent == []
+    ev = next(e for e in store.journal_tail() if e["kind"] == "guard_blocked")
+    assert "login_mismatch" in ev["detail"]["reasons"] and "terminal_stale" in ev["detail"]["reasons"]
+
+
+def test_signal_that_never_recovers_eventually_rejected_as_stale():
+    tr, store, fb, clock = make()
+    clock["local"] = LOCAL0 + timedelta(seconds=10)            # terminal never catches up in this test
+    inbox(store, ENTRY, 123); tr.tick()
+    assert store.get_run("wolves:123") is None                # deferred first
+    clock["utc"] = UTC0 + timedelta(seconds=200)               # now well past max_signal_age_sec (120s)
+    clock["local"] = LOCAL0 + timedelta(seconds=210)           # terminal still stale too
+    tr.tick()
+    run = store.get_run("wolves:123")
+    assert run.state == RunState.REJECTED
+    ev = next(e for e in store.journal_tail() if e["kind"] == "signal_rejected")
+    assert "stale" in ev["detail"]["reasons"]
+
+
 def test_ignore_patterns_short_circuit_boilerplate():
     boiler = "You can put your stop-loss to break-even if you wish, or keep it running if you want to maximise the profit potential! ✔️"
     tr, store, fb, _ = make(management={boiler: Classification(action="break_even", confidence=0.95)},

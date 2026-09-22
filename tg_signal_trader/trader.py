@@ -14,6 +14,15 @@ from .validation import validate_signal
 
 STALE_STATE_SEC = 5.0
 
+# Guards that are purely a moment's bridge/connectivity hiccup and self-resolve within a poll cycle
+# or two. A signal blocked ONLY by one of these is deferred (left unprocessed, retried next tick)
+# rather than permanently rejected — the terminal genuinely recovering a second later must not
+# throw away an otherwise-good signal. Every other guard (wrong account, disarmed, risk limits) is a
+# real reason not to trade and stays a permanent rejection. The natural bound against retrying
+# forever is validate_signal's own 'stale' check (the signal's own age vs max_signal_age_sec) — if
+# the terminal never recovers, the signal eventually ages out there and is rejected for real.
+TRANSIENT_GUARDS = frozenset({"terminal_stale"})
+
 
 class DryRunBridge:
     """Journals commands instead of sending them; fabricates ok results so state machines advance."""
@@ -45,6 +54,7 @@ class Trader:
         self.now_local = now_local or datetime.now
         self.parsers = {p: get_parser(p) for p in cfg.providers}
         self._blocked_notice: dict[str, str] = {}
+        self._deferred_logged: set[tuple[str, int]] = set()   # (provider, msg_id) already journaled as deferred
 
     # ---- arming ---------------------------------------------------------
     def arming_block(self, provider: str, state: BridgeState | None) -> str | None:
@@ -95,7 +105,8 @@ class Trader:
             if sig is None and looks_like_entry(msg.text):
                 sig = self._llm_entry(msg, provider)
             if sig is not None:
-                self._handle_signal(provider, sig, state)
+                if not self._handle_signal(provider, sig, state):
+                    continue   # deferred: leave the inbox message 'new' so it is retried next tick
             elif looks_like_entry(msg.text):
                 self.store.journal(provider, "signal_unparsed", {"msg_id": msg.msg_id, "reason": result.rejected_reason or "llm declined", "text": msg.text[:300]})
             elif msg.text.strip():
@@ -179,7 +190,9 @@ class Trader:
             bad.append("crosscheck:entry_zone")
         return bad, model
 
-    def _handle_signal(self, provider: str, sig: Signal, state: BridgeState | None) -> None:
+    def _handle_signal(self, provider: str, sig: Signal, state: BridgeState | None) -> bool:
+        """Returns True once the signal is handled for good (placed or permanently rejected), False
+        if it was deferred and must be retried on a later tick (see TRANSIENT_GUARDS)."""
         cfg, bridge = self.cfg.providers[provider], self.bridges[provider]
         run = SignalRun.from_signal(sig)
         broker_symbol = cfg.symbols.get(sig.symbol)
@@ -199,18 +212,25 @@ class Trader:
             run.state = RunState.REJECTED
             self.store.save_run(run)
             self.store.journal(provider, "signal_rejected", {"reasons": fails, "signal": sig.model_dump(mode="json"), "crosscheck": crosscheck}, run_id=run.id)
-            return
+            return True
         guards = self.guard_reasons(provider, state)
         if guards:
+            if set(guards) <= TRANSIENT_GUARDS:
+                key = (provider, sig.telegram_msg_id)
+                if key not in self._deferred_logged:
+                    self._deferred_logged.add(key)
+                    self.store.journal(provider, "signal_deferred", {"reasons": guards, "signal_id": sig.id})
+                return False
             run.state = RunState.REJECTED
             self.store.save_run(run)
             self.store.journal(provider, "guard_blocked", {"reasons": guards, "signal": sig.model_dump(mode="json")}, run_id=run.id)
-            return
+            return True
         events = place_run(run, cfg, state, bridge, self.now_local())
         self.store.save_run(run)
         self.store.journal(provider, "signal_accepted", {"signal": sig.model_dump(mode="json"), "volumes": [l.volume for l in run.legs]}, run_id=run.id)
         for e in events:
             self.store.journal(provider, e.pop("kind"), e, run_id=run.id)
+        return True
 
     # ---- management -----------------------------------------------------
     def resolve_reference(self, provider: str, msg: InboxMessage) -> SignalRun | None:
