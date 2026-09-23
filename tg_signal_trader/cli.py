@@ -138,7 +138,13 @@ def bridge_test(bridge: Bridge, symbol: str, now_local: Callable[[], datetime] =
     out: list[str] = []
 
     def wait(cmd_id: str):
-        deadline = time.perf_counter() + 15
+        # Real-world observation, IconTech-Live (2026-09-23): the round trip occasionally took
+        # longer than 15s under normal VPS/broker latency, so bridge_test gave up and reported
+        # "FAILED no result" right as the command actually landed — aborting before ever reaching
+        # the modify_sl/close cleanup and leaving a real, unmanaged position open. This is purely a
+        # limitation of this synchronous diagnostic; the real trading path (ladder.py) has no such
+        # timeout and just keeps checking on every later tick, however long it takes.
+        deadline = time.perf_counter() + 45
         while time.perf_counter() < deadline:
             for r in bridge.read_results():
                 if r.cmd_id == cmd_id:
