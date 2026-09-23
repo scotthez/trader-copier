@@ -27,12 +27,17 @@ def _numbered_tps(norm: str) -> list[float | None] | None:
         tps[int(m.group(1))] = None if m.group(2).upper() == "OPEN" else parse_price(m.group(2))
     if not all(k in tps for k in (1, 2, 3)):
         return None
-    return [tps.get(1), tps.get(2), tps.get(3), tps.get(4)]
+    result: list[float | None] = [tps[1], tps[2], tps[3]]
+    if 4 in tps:
+        result.append(tps[4])
+    return result
 
 
 def _plain_tps(norm: str) -> list[float | None] | None:
     vals = [parse_price(m.group(1)) for m in _TP_PLAIN.finditer(norm)]
-    return [vals[0], vals[1], vals[2], vals[3] if len(vals) > 3 else None] if len(vals) >= 3 else None
+    if len(vals) < 3:
+        return None
+    return vals[:3] + ([vals[3]] if len(vals) > 3 else [])
 
 
 def _build(msg: InboxMessage, template: str, symbol: str, side: str, entry_type: EntryType,

@@ -23,7 +23,10 @@ def _levels(norm: str) -> tuple[float, list[float | None]] | None:
         tps[int(m.group(1))] = None if m.group(2).upper() == "OPEN" else parse_price(m.group(2))
     if not sl or not all(k in tps for k in (1, 2, 3)):
         return None
-    return parse_price(sl.group(1)), [tps.get(1), tps.get(2), tps.get(3), tps.get(4)]
+    result: list[float | None] = [tps[1], tps[2], tps[3]]
+    if 4 in tps:
+        result.append(tps[4])
+    return parse_price(sl.group(1)), result
 
 
 def _build(msg: InboxMessage, template: str, symbol: str, side: str, entry_type: EntryType,

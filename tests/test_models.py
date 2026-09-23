@@ -5,13 +5,18 @@ from tg_signal_trader.models import (Side, EntryType, LegState, RunState, Signal
 
 
 def test_complete_tps_fills_open_tp4_by_last_increment():
+    # A TP4 explicitly present but written as "Open" (a 4th element that is None) is synthesised.
     assert complete_tps([4381, 4386, 4391, None]) == [4381, 4386, 4391, 4396]
     assert complete_tps([4356.27, 4357.42, 4359.73, None]) == pytest.approx([4356.27, 4357.42, 4359.73, 4362.04])
-    assert complete_tps([4381, 4386, 4391]) == [4381, 4386, 4391, 4396]
 
 
 def test_complete_tps_keeps_explicit_tp4():
     assert complete_tps([1, 2, 3, 10]) == [1, 2, 3, 10]
+
+
+def test_complete_tps_stays_three_legs_when_tp4_never_mentioned():
+    # No TP4 at all in the source (a 3-element list) stays a 3-leg run — no synthesized leg 4.
+    assert complete_tps([4381, 4386, 4391]) == [4381, 4386, 4391]
 
 
 def test_complete_tps_rejects_fewer_than_three():
