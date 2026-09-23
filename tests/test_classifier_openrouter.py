@@ -33,6 +33,10 @@ def test_management_happy_path_uses_openai_parse_shape():
     kw = c.completions.calls[0]
     assert kw["model"] == "openai/gpt-5-mini" and kw["response_format"] is Classification and c.opts == {"timeout": 8, "max_retries": 1}
     assert kw["messages"][0]["role"] == "system" and "im be now" in kw["messages"][1]["content"] and "XAUUSD" in kw["messages"][1]["content"]
+    # Low reasoning effort: this is a structured field-extraction/comparison task, not open-ended
+    # judgment, and gpt-5-mini's default reasoning effort was most of the crosscheck's 8-14s latency
+    # (a real cost: a slow crosscheck delays a MARKET order into a fast-moving price, see trader.py).
+    assert kw["extra_body"] == {"reasoning": {"effort": "low"}}
 
 
 def test_errors_and_refusals_become_none():

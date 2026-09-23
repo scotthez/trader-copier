@@ -13,10 +13,14 @@ class OpenRouterClassifier:
         self.client = client or openai.OpenAI(api_key=api_key, base_url=OPENROUTER_BASE_URL)
 
     def _parse(self, system: str, user: str, schema):
+        # Low reasoning effort: this is structured field extraction/comparison, not open-ended
+        # judgment, and a reasoning model's default effort is real latency a live signal pays for
+        # (the entry crosscheck alone was 8-14s, delaying a MARKET order into a fast-moving price).
         completion = self.client.with_options(timeout=self.timeout, max_retries=1).chat.completions.parse(
             model=self.model,
             messages=[{"role": "system", "content": system}, {"role": "user", "content": user}],
-            response_format=schema)
+            response_format=schema,
+            extra_body={"reasoning": {"effort": "low"}})
         return completion.choices[0].message.parsed
 
     def classify_management(self, text: str, provider: str, ctx: RunContext | None, recent: list[str], reply_text: str | None = None) -> Classification:
