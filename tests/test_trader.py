@@ -302,3 +302,28 @@ def test_ignore_patterns_short_circuit_boilerplate():
     assert ("management", boiler) not in tr.classifier.calls                       # never sent to the model
     assert all(l.sl_current == 4341.0 for l in store.get_run("wolves:110").legs)    # no BE applied
     assert any(e["kind"] == "management_ignored" for e in store.journal_tail())
+
+
+def test_crosscheck_that_overruns_its_deadline_falls_back_to_template():
+    # Live, Lewis NAS100 2026-09-24: a MARKET entry went out 61s after the post. The SDK timeout is per
+    # network read, so a slow model reply could hold the order well past llm.timeout_sec.
+    import time
+    tr, store, fb, _ = make(entries={ENTRY: _ex()})
+    tr.cfg.llm.timeout_sec = 0.2
+    real = tr.classifier.extract_entry
+    tr.classifier.extract_entry = lambda text, provider: (time.sleep(1.0), real(text, provider))[1]
+    inbox(store, ENTRY, 110)
+    t0 = time.monotonic(); tr.tick()
+    assert time.monotonic() - t0 < 0.8
+    assert store.get_run("wolves:110").state in (RunState.PLACING, RunState.ACTIVE) and fb.sent
+    ev = next(e for e in store.journal_tail() if e["kind"] == "entry_crosscheck_unavailable")
+    assert "0.2s" in ev["detail"]["reason"] and ev["detail"]["crosscheck_sec"] < 0.8
+
+
+def test_decisions_journal_signal_age_and_crosscheck_time():
+    tr, store, fb, clock = make(entries={ENTRY: _ex()})
+    inbox(store, ENTRY, 111, ts=UTC0 - timedelta(seconds=7))
+    tr.tick()
+    j = {e["kind"]: e["detail"] for e in store.journal_tail()}
+    assert j["signal_accepted"]["age_sec"] == 7.0
+    assert isinstance(j["entry_crosscheck_ok"]["crosscheck_sec"], float)
