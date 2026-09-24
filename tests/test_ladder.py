@@ -131,3 +131,26 @@ def test_cancel_pending_action_keeps_open_legs():
     fb.fill_pending(run.legs[0].order_ticket); pump(run, fb)
     apply_action(run, "cancel_pending", None, fb.read_state(), fb, CFG); pump(run, fb)
     assert run.legs[0].state == LegState.OPEN and [l.state for l in run.legs[1:]] == [LegState.CANCELLED] * 3 and run.state == RunState.ACTIVE
+
+
+def test_unwritable_bridge_cancels_legs_instead_of_crashing():
+    fb, run = bridge(), mk()
+
+    def denied(cmd):
+        raise PermissionError(13, "Permission denied", "commands.jsonl")
+    fb.send = denied
+    events = place_run(run, CFG, fb.read_state(), fb, fb.now)
+    assert [e["kind"] for e in events] == ["command_send_failed"] * 4
+    assert all(l.state == LegState.CANCELLED and "not sent" in l.reason and l.inflight_cmd is None for l in run.legs)
+    assert run.state == RunState.DONE
+
+
+def test_unwritable_bridge_on_sl_move_is_journaled_not_raised():
+    fb, run = bridge(), mk()
+    place_run(run, CFG, fb.read_state(), fb, fb.now); pump(run, fb)
+    fb.send = lambda cmd: (_ for _ in ()).throw(PermissionError(13, "Permission denied"))
+    fb.hit_tp(run.legs[1].position_ticket)
+    events = pump(run, fb)
+    assert [e["kind"] for e in events].count("command_send_failed") == 2
+    assert all(l.inflight_cmd is None for l in run.legs)
+    assert [l.state for l in run.legs[2:]] == [LegState.OPEN] * 2 and run.state == RunState.ACTIVE

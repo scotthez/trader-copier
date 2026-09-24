@@ -17,7 +17,17 @@ def _send(run: SignalRun, leg: Leg, bridge: Bridge, cmd_type: str, **fields) -> 
     cmd = Command(cmd_id=run.next_cmd_id(leg.n), type=cmd_type, **fields)
     leg.inflight_cmd, leg.inflight_kind = cmd.cmd_id, cmd_type
     leg.inflight_sl = fields.get("sl") if cmd_type == "modify_sl" else None
-    bridge.send(cmd)
+    try:
+        bridge.send(cmd)
+    except OSError as e:
+        # The command never reached the EA (live miss, 2026-09-24: commands.jsonl not writable by the
+        # service user). Raising here crash-looped the whole trader for every provider, retrying the
+        # same signal until it went stale. Never wait for a result that cannot come: an open leg is
+        # cancelled; any other command is journaled as failed and the leg keeps its current state.
+        leg.inflight_cmd = leg.inflight_kind = leg.inflight_sl = None
+        if cmd_type in ("open_market", "open_pending"):
+            leg.state, leg.reason = LegState.CANCELLED, f"{cmd_type} not sent: {e}"
+        return _ev("command_send_failed", run, cmd_id=cmd.cmd_id, type=cmd_type, leg=leg.n, error=str(e))
     return _ev("command_sent", run, cmd_id=cmd.cmd_id, type=cmd_type, leg=leg.n, fields={k: v for k, v in fields.items() if v is not None})
 
 
