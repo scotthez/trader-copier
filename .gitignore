@@ -8,3 +8,9 @@ __pycache__/
 *.log
 .DS_Store
 *.egg-info/
+# live, per-server files: never commit
+config.yaml
+*.sqlite
+*.sqlite-journal
+*.sqlite-wal
+*.sqlite-shm
