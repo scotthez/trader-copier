@@ -1,5 +1,7 @@
 """The trader loop: inbox → signals/management → runs → bridge commands."""
 from __future__ import annotations
+import threading
+import time
 from datetime import datetime, timezone
 from typing import Callable
 from .bridge import Bridge, BridgeState, Command, CommandResult
@@ -22,6 +24,29 @@ STALE_STATE_SEC = 5.0
 # forever is validate_signal's own 'stale' check (the signal's own age vs max_signal_age_sec) — if
 # the terminal never recovers, the signal eventually ages out there and is rejected for real.
 TRANSIENT_GUARDS = frozenset({"terminal_stale"})
+
+
+def _call_with_deadline(fn: Callable, deadline_sec: float):
+    """Runs fn() and returns its result, or raises TimeoutError once deadline_sec of wall-clock time
+    has passed. The SDKs' own timeout is per network read, not per call: a response that keeps
+    trickling bytes (OpenRouter pads slow non-streaming replies with whitespace), plus max_retries,
+    can hold a MARKET entry far past llm.timeout_sec. A call that overruns is abandoned on its
+    daemon thread; its result is discarded."""
+    box: dict = {}
+
+    def run() -> None:
+        try:
+            box["value"] = fn()
+        except BaseException as e:   # re-raised on the caller's thread
+            box["error"] = e
+    t = threading.Thread(target=run, daemon=True)
+    t.start()
+    t.join(deadline_sec)
+    if t.is_alive():
+        raise TimeoutError(f"no answer within {deadline_sec:g}s")
+    if "error" in box:
+        raise box["error"]
+    return box.get("value")
 
 
 class DryRunBridge:
@@ -179,11 +204,18 @@ class Trader:
 
     def _crosscheck(self, provider: str, sig: Signal) -> tuple[list[str], dict | None]:
         """Independent model reading of a template-parsed entry. Returns (mismatched fields, model dump)."""
-        ex = self.classifier.extract_entry(sig.raw_text, provider)
+        t0 = time.monotonic()
+        try:
+            ex = _call_with_deadline(lambda: self.classifier.extract_entry(sig.raw_text, provider), self.cfg.llm.timeout_sec)
+            why = None if ex is not None else "no answer"
+        except TimeoutError as e:
+            ex, why = None, str(e)
+        sec = round(time.monotonic() - t0, 2)
         if ex is None:
-            self.store.journal(provider, "entry_crosscheck_unavailable", {"signal": sig.id})
+            self.store.journal(provider, "entry_crosscheck_unavailable", {"signal": sig.id, "reason": why, "crosscheck_sec": sec})
             return [], None
         model = ex.model_dump()
+        model["crosscheck_sec"] = sec
         bad: list[str] = []
         if ex.confidence < self.cfg.llm.confidence_threshold:
             bad.append("crosscheck:confidence")
@@ -201,6 +233,10 @@ class Trader:
         if sig.entry_zone and ex.entry_zone and abs(ex.entry_zone[0] - sig.entry_zone[0]) > 1e-6:
             bad.append("crosscheck:entry_zone")
         return bad, model
+
+    def _age(self, sig: Signal) -> float:
+        """Seconds from the Telegram post to now — the delay the order pays for, journaled on every decision."""
+        return round((self.now_utc() - sig.received_at).total_seconds(), 1)
 
     def _handle_signal(self, provider: str, sig: Signal, state: BridgeState | None) -> bool:
         """Returns True once the signal is handled for good (placed or permanently rejected), False
@@ -226,13 +262,14 @@ class Trader:
             if model is not None:
                 crosscheck = {"template": {"symbol": sig.symbol, "side": sig.side.value, "entry_type": sig.entry_type.value, "sl": sig.sl, "tps": sig.tps}, "model": model}
                 if not bad:
-                    self.store.journal(provider, "entry_crosscheck_ok", {"signal": sig.id}, run_id=run.id)
+                    self.store.journal(provider, "entry_crosscheck_ok", {"signal": sig.id, "crosscheck_sec": model.get("crosscheck_sec")}, run_id=run.id)
         if spec is not None and not spec.trade_allowed:
             fails.append("trade_not_allowed")
         if fails:
             run.state = RunState.REJECTED
             self.store.save_run(run)
-            self.store.journal(provider, "signal_rejected", {"reasons": fails, "signal": sig.model_dump(mode="json"), "crosscheck": crosscheck}, run_id=run.id)
+            self.store.journal(provider, "signal_rejected", {"reasons": fails, "signal": sig.model_dump(mode="json"), "crosscheck": crosscheck,
+                                                             "age_sec": self._age(sig)}, run_id=run.id)
             self._signal_quote_cache.pop(sig.id, None)
             self._signal_crosscheck_cache.pop(sig.id, None)
             return True
@@ -260,7 +297,8 @@ class Trader:
             return True
         events = place_run(run, cfg, state, bridge, self.now_local())
         self.store.save_run(run)
-        self.store.journal(provider, "signal_accepted", {"signal": sig.model_dump(mode="json"), "volumes": [l.volume for l in run.legs]}, run_id=run.id)
+        self.store.journal(provider, "signal_accepted", {"signal": sig.model_dump(mode="json"), "volumes": [l.volume for l in run.legs],
+                                                         "age_sec": self._age(sig)}, run_id=run.id)
         for e in events:
             self.store.journal(provider, e.pop("kind"), e, run_id=run.id)
         self._signal_quote_cache.pop(sig.id, None)
