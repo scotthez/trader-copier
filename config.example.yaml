@@ -29,6 +29,7 @@ llm:
   confidence_threshold: 0.8
   timeout_sec: 8                  # hard wall-clock cap on the entry crosscheck; past it the template result stands
   entry_crosscheck: true          # template-parsed entries must agree with the model's reading (symbol, side, type, SL, TP1-3)
+  market_crosscheck_after: true   # MARKET entries go out at once and are checked straight after; a disagreement closes them. LIMIT entries are always checked first
 db_path: /var/lib/tg-signal-trader/trader.sqlite
 session_path: /var/lib/tg-signal-trader/tg_listener.session
 poll_interval_sec: 0.5

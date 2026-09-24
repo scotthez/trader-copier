@@ -20,7 +20,10 @@ this", "im BE", "Move SL 4412") go through a Claude classifier; only `close_all`
 Entries are cross-checked: with `llm.entry_crosscheck: true` the model reads every template-parsed
 entry independently and the trade only goes ahead if both agree on symbol, side, entry type, SL and
 TP1–TP3 (a disagreement is journaled as `crosscheck:<field>`; if the model is unavailable the
-template result stands and `entry_crosscheck_unavailable` is journaled).
+template result stands and `entry_crosscheck_unavailable` is journaled). With
+`llm.market_crosscheck_after: true` (the default) MARKET entries are not held for the model: they are
+sent at once and checked straight after, and a disagreement closes every leg of that trade
+(`crosscheck_failed_closing`). LIMIT entries are always checked before any order is placed.
 
 TP ladder: L1 hit → nothing; L2 hit → L3/L4 stop to their entry; L3 hit → L4 stop to TP1; stops only
 ever move one way. `TP4: OPEN` → TP4 = TP3 + (TP3 − TP2). Limit/zone signals become pending orders

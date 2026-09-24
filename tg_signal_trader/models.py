@@ -115,6 +115,7 @@ class SignalRun(BaseModel):
     be_applied: bool = False       # ladder: L2 TP → L3/L4 to break-even done
     tp1_applied: bool = False      # ladder: L3 TP → L4 to TP1 done
     pendings_cancelled: bool = False
+    close_requested: bool = False  # entry crosscheck disagreed after placement → close/cancel every leg
     seq: int = 0                   # command sequence for cmd_ids
     created_at: datetime
     updated_at: datetime

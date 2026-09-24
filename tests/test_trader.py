@@ -11,7 +11,7 @@ LOCAL0 = datetime(2026, 9, 18, 13, 0, 0)
 ENTRY = "BUY XAUUSD @4347\n\nSL 4341\nTP1 4353\nTP2 4357\nTP3 4362\nTP4 Open"
 
 
-def make(management=None, entries=None, **provider_overrides):
+def make(management=None, entries=None, precheck_market=False, **provider_overrides):
     pc = dict(telegram_chat=-2, bridge_dir="/tmp/w", symbols={"XAUUSD": "XAUUSD"}, sl_range={"XAUUSD": (1, 60)})
     pc.update(provider_overrides)
     cfg = AppConfig(providers={"wolves": ProviderConfig(**pc)}, db_path=":memory:")
@@ -19,6 +19,7 @@ def make(management=None, entries=None, **provider_overrides):
     fb = FakeBridge(now_local=LOCAL0, balance=10_000)
     fb.set_quote("XAUUSD", 4346.8, 4347.0)
     clock = {"utc": UTC0, "local": LOCAL0}
+    cfg.llm.market_crosscheck_after = not precheck_market
     tr = Trader(cfg, store, {"wolves": fb}, MockClassifier(management, entries), now_utc=lambda: clock["utc"], now_local=lambda: clock["local"])
     return tr, store, fb, clock
 
@@ -171,7 +172,7 @@ def test_crosscheck_agreement_trades():
 
 
 def test_crosscheck_mismatch_rejects():
-    tr, store, fb, _ = make(entries={ENTRY: _ex(sl=4314)})           # model read the SL differently
+    tr, store, fb, _ = make(entries={ENTRY: _ex(sl=4314)}, precheck_market=True)   # model read the SL differently
     inbox(store, ENTRY, 101); tr.tick()
     run = store.get_run("wolves:101")
     assert run.state == RunState.REJECTED and fb.sent == []
@@ -180,10 +181,10 @@ def test_crosscheck_mismatch_rejects():
 
 
 def test_crosscheck_low_confidence_or_wrong_side_rejects():
-    tr, store, fb, _ = make(entries={ENTRY: _ex(side="SELL")})
+    tr, store, fb, _ = make(entries={ENTRY: _ex(side="SELL")}, precheck_market=True)
     inbox(store, ENTRY, 102); tr.tick()
     assert "crosscheck:side" in next(e for e in store.journal_tail() if e["kind"] == "signal_rejected")["detail"]["reasons"]
-    tr2, store2, fb2, _ = make(entries={ENTRY: _ex(confidence=0.3)})
+    tr2, store2, fb2, _ = make(entries={ENTRY: _ex(confidence=0.3)}, precheck_market=True)
     inbox(store2, ENTRY, 103); tr2.tick()
     assert "crosscheck:confidence" in next(e for e in store2.journal_tail() if e["kind"] == "signal_rejected")["detail"]["reasons"]
 
@@ -308,7 +309,7 @@ def test_crosscheck_that_overruns_its_deadline_falls_back_to_template():
     # Live, Lewis NAS100 2026-09-24: a MARKET entry went out 61s after the post. The SDK timeout is per
     # network read, so a slow model reply could hold the order well past llm.timeout_sec.
     import time
-    tr, store, fb, _ = make(entries={ENTRY: _ex()})
+    tr, store, fb, _ = make(entries={ENTRY: _ex()}, precheck_market=True)
     tr.cfg.llm.timeout_sec = 0.2
     real = tr.classifier.extract_entry
     tr.classifier.extract_entry = lambda text, provider: (time.sleep(1.0), real(text, provider))[1]
@@ -321,9 +322,91 @@ def test_crosscheck_that_overruns_its_deadline_falls_back_to_template():
 
 
 def test_decisions_journal_signal_age_and_crosscheck_time():
-    tr, store, fb, clock = make(entries={ENTRY: _ex()})
+    tr, store, fb, clock = make(entries={ENTRY: _ex()}, precheck_market=True)
     inbox(store, ENTRY, 111, ts=UTC0 - timedelta(seconds=7))
     tr.tick()
     j = {e["kind"]: e["detail"] for e in store.journal_tail()}
     assert j["signal_accepted"]["age_sec"] == 7.0
     assert isinstance(j["entry_crosscheck_ok"]["crosscheck_sec"], float)
+
+
+# ---- MARKET entries: place first, crosscheck straight after (llm.market_crosscheck_after) ----------
+
+LIMIT_ENTRY = "BUY LIMIT XAUUSD @4345 4343\n\nSL 4335\nTP1 4353\nTP2 4357\nTP3 4362"
+
+
+def _settle(tr, n=20):
+    """Ticks until the background crosscheck has been settled (MockClassifier answers at once)."""
+    import time
+    for _ in range(n):
+        tr.tick()
+        if not tr._postchecks:
+            return
+        time.sleep(0.01)
+    raise AssertionError("postcheck never settled")
+
+
+def test_market_entry_is_sent_before_the_model_answers():
+    import threading
+    gate = threading.Event()
+    tr, store, fb, _ = make(entries={ENTRY: _ex()})
+    real = tr.classifier.extract_entry
+    tr.classifier.extract_entry = lambda text, provider: (gate.wait(5), real(text, provider))[1]
+    inbox(store, ENTRY, 120); tr.tick()
+    assert len([c for c in fb.sent if c.type == "open_market"]) == 4      # orders out, model still thinking
+    assert not any(e["kind"].startswith("entry_crosscheck") for e in store.journal_tail())
+    gate.set(); _settle(tr)
+    ok = next(e for e in store.journal_tail() if e["kind"] == "entry_crosscheck_ok")
+    assert ok["detail"]["after_placement"] is True
+    assert store.get_run("wolves:120").state == RunState.ACTIVE and not store.get_run("wolves:120").close_requested
+
+
+def test_market_entry_is_closed_when_the_model_disagrees():
+    tr, store, fb, _ = make(entries={ENTRY: _ex(sl=4314)})
+    inbox(store, ENTRY, 121); tr.tick(); _settle(tr); tr.tick()
+    ev = next(e for e in store.journal_tail() if e["kind"] == "crosscheck_failed_closing")
+    assert "crosscheck:sl" in ev["detail"]["reasons"] and ev["detail"]["crosscheck"]["model"]["sl"] == 4314
+    tr.tick()
+    run = store.get_run("wolves:121")
+    assert [c.type for c in fb.sent].count("close") == 4 and fb.positions == []
+    assert run.state == RunState.DONE and all(l.state == LegState.CLOSED_MANUAL for l in run.legs)
+
+
+def test_disagreement_closes_legs_whose_fill_arrives_later():
+    tr, store, fb, _ = make(entries={ENTRY: _ex(side="SELL")})
+    fb_results = fb.read_results
+    held: list = []
+    fb.read_results = lambda: (held.extend(fb_results()), [])[1]            # fills not reported yet
+    inbox(store, ENTRY, 122); tr.tick(); _settle(tr)
+    assert store.get_run("wolves:122").close_requested and all(l.state == LegState.PLACING for l in store.get_run("wolves:122").legs)
+    fb.read_results = lambda: (held + fb_results(), held.clear())[0]       # fills land now
+    tr.tick(); tr.tick()
+    assert fb.positions == [] and store.get_run("wolves:122").state == RunState.DONE
+
+
+def test_unavailable_model_after_placement_leaves_the_trade_standing():
+    tr, store, fb, _ = make()                                                # MockClassifier returns None
+    inbox(store, ENTRY, 123); tr.tick(); _settle(tr); tr.tick()
+    ev = next(e for e in store.journal_tail() if e["kind"] == "entry_crosscheck_unavailable")
+    assert ev["detail"]["after_placement"] is True and store.get_run("wolves:123").state == RunState.ACTIVE
+
+
+def test_slow_postcheck_times_out_and_the_trade_stands():
+    import threading, time
+    gate = threading.Event()
+    tr, store, fb, _ = make(entries={ENTRY: _ex(sl=4314)})                  # would disagree, but answers too late
+    tr.cfg.llm.timeout_sec = 0.1
+    real = tr.classifier.extract_entry
+    tr.classifier.extract_entry = lambda text, provider: (gate.wait(5), real(text, provider))[1]
+    inbox(store, ENTRY, 124); tr.tick(); time.sleep(0.15); tr.tick()
+    ev = next(e for e in store.journal_tail() if e["kind"] == "entry_crosscheck_unavailable")
+    assert "0.1s" in ev["detail"]["reason"] and not tr._postchecks
+    gate.set()
+    assert not store.get_run("wolves:124").close_requested
+
+
+def test_limit_entry_is_still_checked_before_placing():
+    tr, store, fb, _ = make(entries={LIMIT_ENTRY: _ex(entry_type="LIMIT", entry_zone=[4345, 4343], sl=4330, tps=[4353, 4357, 4362])})
+    inbox(store, LIMIT_ENTRY, 125); tr.tick()
+    assert store.get_run("wolves:125").state == RunState.REJECTED and fb.sent == []
+    assert "crosscheck:sl" in next(e for e in store.journal_tail() if e["kind"] == "signal_rejected")["detail"]["reasons"]

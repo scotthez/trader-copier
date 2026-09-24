@@ -177,10 +177,27 @@ def _expiry_backstop(run: SignalRun, cfg: ProviderConfig, bridge: Bridge, now_lo
     return [_send(run, leg, bridge, "cancel", order=leg.order_ticket) for leg in run.pending_legs() if leg.inflight_cmd is None]
 
 
+def _close_everything(run: SignalRun, bridge: Bridge) -> list[dict]:
+    """Closes open legs and cancels pending ones, re-applied every tick so a leg still PLACING when
+    the close was requested is closed as soon as its fill is known."""
+    events: list[dict] = []
+    for leg in run.legs:
+        if leg.inflight_cmd is not None:
+            continue
+        if leg.state == LegState.OPEN:
+            events.append(_send(run, leg, bridge, "close", position=leg.position_ticket))
+        elif leg.state == LegState.PENDING_ORDER:
+            events.append(_send(run, leg, bridge, "cancel", order=leg.order_ticket))
+    return events
+
+
 def sync_run(run: SignalRun, cfg: ProviderConfig, state: BridgeState, bridge: Bridge, now_local: datetime) -> list[dict]:
     events = _detect(run, state, now_local)
-    events += _ladder(run, bridge)
-    events += _expiry_backstop(run, cfg, bridge, now_local)
+    if run.close_requested:
+        events += _close_everything(run, bridge)
+    else:
+        events += _ladder(run, bridge)
+        events += _expiry_backstop(run, cfg, bridge, now_local)
     _recompute_state(run)
     return events
 

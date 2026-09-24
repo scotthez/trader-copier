@@ -55,6 +55,7 @@ class LlmConfig(BaseModel):
     confidence_threshold: float = 0.8
     timeout_sec: float = 8.0
     entry_crosscheck: bool = True        # template-parsed entries must agree with the model's reading before trading
+    market_crosscheck_after: bool = True # MARKET entries: place first, crosscheck in the background, close the trade if the model disagrees
 
     @field_validator("provider")
     @classmethod

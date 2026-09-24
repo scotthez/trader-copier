@@ -26,27 +26,47 @@ STALE_STATE_SEC = 5.0
 TRANSIENT_GUARDS = frozenset({"terminal_stale"})
 
 
+class _Background:
+    """fn() running on a daemon thread. A call that overruns its deadline is abandoned there and its
+    result discarded."""
+
+    def __init__(self, fn: Callable):
+        self.started = time.monotonic()
+        self._box: dict = {}
+        self._thread = threading.Thread(target=self._run, args=(fn,), daemon=True)
+        self._thread.start()
+
+    def _run(self, fn: Callable) -> None:
+        try:
+            self._box["value"] = fn()
+        except BaseException as e:   # re-raised on the caller's thread by result()
+            self._box["error"] = e
+
+    def elapsed(self) -> float:
+        return time.monotonic() - self.started
+
+    def done(self) -> bool:
+        return not self._thread.is_alive()
+
+    def wait(self, sec: float) -> None:
+        self._thread.join(max(0.0, sec))
+
+    def result(self):
+        if "error" in self._box:
+            raise self._box["error"]
+        return self._box.get("value")
+
+
 def _call_with_deadline(fn: Callable, deadline_sec: float):
     """Runs fn() and returns its result, or raises TimeoutError once deadline_sec of wall-clock time
     has passed. The SDKs' own timeout is per network read, not per call: a response that keeps
     trickling bytes (OpenRouter pads slow non-streaming replies with whitespace), plus max_retries,
-    can hold a MARKET entry far past llm.timeout_sec. A call that overruns is abandoned on its
-    daemon thread; its result is discarded."""
-    box: dict = {}
-
-    def run() -> None:
-        try:
-            box["value"] = fn()
-        except BaseException as e:   # re-raised on the caller's thread
-            box["error"] = e
-    t = threading.Thread(target=run, daemon=True)
-    t.start()
-    t.join(deadline_sec)
-    if t.is_alive():
+    can hold a MARKET entry far past llm.timeout_sec."""
+    job = _Background(fn)
+    job.wait(deadline_sec)
+    if not job.done():
         raise TimeoutError(f"no answer within {deadline_sec:g}s")
-    if "error" in box:
-        raise box["error"]
-    return box.get("value")
+    return job.result()
 
 
 class DryRunBridge:
@@ -92,6 +112,10 @@ class Trader:
         # crosscheck are frozen. Entries cleared once the run is finalised either way.
         self._signal_quote_cache: dict[str, Quote] = {}
         self._signal_crosscheck_cache: dict[str, tuple[list[str], dict | None]] = {}
+        # MARKET entries placed before their crosscheck (llm.market_crosscheck_after): signal id →
+        # (provider, signal, background model call). Held in memory only; a trader restart before the
+        # answer lands leaves the template reading standing, as when the model is unavailable.
+        self._postchecks: dict[str, tuple[str, Signal, _Background]] = {}
 
     # ---- arming ---------------------------------------------------------
     def arming_block(self, provider: str, state: BridgeState | None) -> str | None:
@@ -118,6 +142,7 @@ class Trader:
             elif not block:
                 self._blocked_notice.pop(provider, None)
             self.process_inbox(provider, state)
+            self._finish_postchecks(provider)
             self.sync(provider, state)
 
     def sync(self, provider: str, state: BridgeState | None) -> None:
@@ -214,6 +239,10 @@ class Trader:
         if ex is None:
             self.store.journal(provider, "entry_crosscheck_unavailable", {"signal": sig.id, "reason": why, "crosscheck_sec": sec})
             return [], None
+        return self._compare(sig, ex, sec)
+
+    def _compare(self, sig: Signal, ex, sec: float) -> tuple[list[str], dict]:
+        """Fields where the model's reading disagrees with the template's. Returns (mismatches, model dump)."""
         model = ex.model_dump()
         model["crosscheck_sec"] = sec
         bad: list[str] = []
@@ -252,7 +281,9 @@ class Trader:
             quote = self._signal_quote_cache.get(sig.id)
         fails = validate_signal(sig, cfg, quote, self.now_utc())
         crosscheck: dict | None = None
-        if self.cfg.llm.entry_crosscheck and sig.parsed_by != "llm":
+        check = self.cfg.llm.entry_crosscheck and sig.parsed_by != "llm"
+        postcheck = check and sig.entry_type == EntryType.MARKET and self.cfg.llm.market_crosscheck_after
+        if check and not postcheck:
             cached = self._signal_crosscheck_cache.get(sig.id)
             if cached is None:
                 cached = self._crosscheck(provider, sig)
@@ -301,9 +332,43 @@ class Trader:
                                                          "age_sec": self._age(sig)}, run_id=run.id)
         for e in events:
             self.store.journal(provider, e.pop("kind"), e, run_id=run.id)
+        if postcheck:
+            self._postchecks[sig.id] = (provider, sig, _Background(lambda: self.classifier.extract_entry(sig.raw_text, provider)))
         self._signal_quote_cache.pop(sig.id, None)
         self._signal_crosscheck_cache.pop(sig.id, None)
         return True
+
+    def _finish_postchecks(self, provider: str) -> None:
+        """Settles the crosschecks of MARKET entries that were placed first. Agreement or no answer →
+        the trade stands. Disagreement → the run is flagged close_requested, and sync closes every leg
+        (including legs whose fill arrives later) and cancels anything pending."""
+        timeout = self.cfg.llm.timeout_sec
+        for sig_id, (prov, sig, job) in list(self._postchecks.items()):
+            if prov != provider or (not job.done() and job.elapsed() < timeout):
+                continue
+            del self._postchecks[sig_id]
+            sec = round(job.elapsed(), 2)
+            ex, why = None, "no answer"
+            if not job.done():
+                why = f"no answer within {timeout:g}s"
+            else:
+                try:
+                    ex = job.result()
+                except Exception as e:   # a classifier bug must not take the trader down
+                    why = f"error: {type(e).__name__}"
+            if ex is None:
+                self.store.journal(provider, "entry_crosscheck_unavailable", {"signal": sig_id, "reason": why, "crosscheck_sec": sec, "after_placement": True}, run_id=sig_id)
+                continue
+            bad, model = self._compare(sig, ex, sec)
+            if not bad:
+                self.store.journal(provider, "entry_crosscheck_ok", {"signal": sig_id, "crosscheck_sec": sec, "after_placement": True}, run_id=sig_id)
+                continue
+            run = self.store.get_run(sig_id)
+            if run is not None:
+                run.close_requested = True
+                self.store.save_run(run)
+            template = {"symbol": sig.symbol, "side": sig.side.value, "entry_type": sig.entry_type.value, "sl": sig.sl, "tps": sig.tps}
+            self.store.journal(provider, "crosscheck_failed_closing", {"reasons": bad, "crosscheck": {"template": template, "model": model}}, run_id=sig_id)
 
     # ---- management -----------------------------------------------------
     def resolve_reference(self, provider: str, msg: InboxMessage) -> SignalRun | None:
