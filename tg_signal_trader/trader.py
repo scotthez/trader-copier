@@ -215,7 +215,7 @@ class Trader:
         if sum(len(r.open_legs()) + len(r.pending_legs()) + len(r.placing_legs()) for r in live) >= cfg.max_legs_open:
             reasons.append("max_legs_open")
         sod = self.store.kv_get(self._sod_key(provider))
-        if sod and float(sod) > 0 and (float(sod) - state.account.equity) / float(sod) * 100 >= cfg.daily_loss_stop_pct:
+        if cfg.daily_loss_stop_pct > 0 and sod and float(sod) > 0 and (float(sod) - state.account.equity) / float(sod) * 100 >= cfg.daily_loss_stop_pct:
             reasons.append("daily_loss_stop")
         return reasons
 

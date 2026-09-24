@@ -410,3 +410,14 @@ def test_limit_entry_is_still_checked_before_placing():
     inbox(store, LIMIT_ENTRY, 125); tr.tick()
     assert store.get_run("wolves:125").state == RunState.REJECTED and fb.sent == []
     assert "crosscheck:sl" in next(e for e in store.journal_tail() if e["kind"] == "signal_rejected")["detail"]["reasons"]
+
+
+def test_daily_loss_stop_zero_means_off():
+    tr, store, fb, clock = make(daily_loss_stop_pct=0)
+    fb.account.equity = 10_000
+    tr.tick()                                                # start-of-day equity recorded
+    fb.account.equity = 10_000                               # flat day: 0% down must not count as "reached 0%"
+    inbox(store, ENTRY, 130); tr.tick()
+    assert "daily_loss_stop" not in tr.guard_reasons("wolves", fb.read_state())
+    fb.account.equity = 5_000                                # even -50% does not block when off
+    assert "daily_loss_stop" not in tr.guard_reasons("wolves", fb.read_state())

@@ -122,7 +122,9 @@ def status_lines(cfg: AppConfig, store: Store, bridges: dict[str, Bridge], now_l
             legs = " ".join(f"L{l.n}:{l.state.value}" for l in run.legs)
             lines.append(f"    run {run.id} {run.signal.symbol} {run.signal.side.value} {run.state.value} | {legs}")
         sod = store.kv_get(f"sod_equity:{name}:{now_local().date().isoformat()}")
-        if sod:
+        if sod and p.daily_loss_stop_pct <= 0:
+            lines.append(f"    day P&L {(st.account.equity - float(sod)):+.2f} (daily loss stop off)")
+        elif sod:
             lines.append(f"    day P&L {(st.account.equity - float(sod)):+.2f} vs stop {p.daily_loss_stop_pct}% of {float(sod):g}")
     return lines
 

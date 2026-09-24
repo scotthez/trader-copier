@@ -14,7 +14,7 @@ providers:
       - "(?i)you can put your stop-?loss to break-?even if you wish"
     max_open_signals: 2
     max_legs_open: 8
-    daily_loss_stop_pct: 5.0
+    daily_loss_stop_pct: 5.0              # no new entries after losing this % of start-of-day equity (0 = off)
     expected_login: 0                     # the exact account number this terminal must be logged into (0 = any)
     live: false                           # commands are refused on a REAL account until this is true (needs expected_login)
   wolves:
