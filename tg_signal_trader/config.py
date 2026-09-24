@@ -70,6 +70,7 @@ class AppConfig(BaseModel):
     db_path: Path = Path("tg_signal_trader.sqlite")
     session_path: Path = Path("tg_listener.session")
     poll_interval_sec: float = 0.5
+    listener_poll_sec: float = 5.0      # listener also fetches recent channel messages this often (0 = push updates only)
 
 
 def load_config(path: str | Path) -> AppConfig:

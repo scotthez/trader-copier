@@ -32,3 +32,4 @@ llm:
 db_path: /var/lib/tg-signal-trader/trader.sqlite
 session_path: /var/lib/tg-signal-trader/tg_listener.session
 poll_interval_sec: 0.5
+listener_poll_sec: 5               # backstop for Telegram push updates that arrive late or never (0 = off)
