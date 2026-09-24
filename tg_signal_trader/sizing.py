@@ -14,7 +14,10 @@ class SizingSpec(BaseModel):
     tick_size: float
 
 
-def leg_volume(balance: float, risk_pct: float, entry: float, sl: float, spec: SizingSpec) -> float:
+def leg_volume(balance: float, risk_pct: float, entry: float, sl: float, spec: SizingSpec, floor: float = 0.0) -> float:
+    """Lots per leg risking risk_pct of balance, rounded down to the broker step and kept within the
+    broker's min/max. `floor` (config min_volume) raises the result to at least that many lots,
+    rounded up to the step, even when that risks more than risk_pct; volume_max still caps it."""
     dist = abs(entry - sl)
     if dist <= 0 or spec.tick_size <= 0 or spec.tick_value <= 0:
         raise ValueError("SL distance, tick_size and tick_value must be positive")
@@ -22,7 +25,8 @@ def leg_volume(balance: float, risk_pct: float, entry: float, sl: float, spec: S
     loss_per_lot = dist / spec.tick_size * spec.tick_value
     raw = risk_amount / loss_per_lot
     stepped = math.floor(raw / spec.volume_step + 1e-9) * spec.volume_step
-    clamped = min(max(stepped, spec.volume_min), spec.volume_max)
+    floor_stepped = math.ceil(floor / spec.volume_step - 1e-9) * spec.volume_step if floor > 0 else 0.0
+    clamped = min(max(stepped, spec.volume_min, floor_stepped), spec.volume_max)
     digits = max(0, -int(math.floor(math.log10(spec.volume_step))))
     return round(clamped, digits)
 

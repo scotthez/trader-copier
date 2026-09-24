@@ -36,3 +36,14 @@ def test_sl_vs_market():
     q = Quote(bid=4372.0, ask=4372.4)
     assert sl_valid_vs_market(Side.BUY, 4371, q) and not sl_valid_vs_market(Side.BUY, 4373, q)
     assert sl_valid_vs_market(Side.SELL, 4373, q) and not sl_valid_vs_market(Side.SELL, 4372, q)
+
+
+def test_min_volume_floor_raises_small_risk_sizes():
+    # live 2026-09-24: £630 account, 1% per leg, gold SL 4.75 away → 0.0176 → 0.01; user wants ≥ 0.02
+    spec = SizingSpec(volume_step=0.01, volume_min=0.01, volume_max=50, tick_value=0.7555, tick_size=0.01)
+    assert leg_volume(630, 1.0, 4268.30, 4263.55, spec) == pytest.approx(0.01)
+    assert leg_volume(630, 1.0, 4268.30, 4263.55, spec, floor=0.02) == pytest.approx(0.02)
+    assert leg_volume(10_000, 1.0, 4347, 4341, GOLD, floor=0.02) == pytest.approx(0.16)   # risk size already above the floor
+    assert leg_volume(630, 1.0, 4268.30, 4263.55, spec, floor=0.015) == pytest.approx(0.02)  # floor rounds up to the step
+    tiny_max = GOLD.model_copy(update={"volume_max": 0.01})
+    assert leg_volume(100, 1.0, 4347, 4341, tiny_max, floor=0.02) == pytest.approx(0.01)   # broker max still wins

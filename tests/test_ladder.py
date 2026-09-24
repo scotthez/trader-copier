@@ -154,3 +154,14 @@ def test_unwritable_bridge_on_sl_move_is_journaled_not_raised():
     assert [e["kind"] for e in events].count("command_send_failed") == 2
     assert all(l.inflight_cmd is None for l in run.legs)
     assert [l.state for l in run.legs[2:]] == [LegState.OPEN] * 2 and run.state == RunState.ACTIVE
+
+
+def test_min_volume_floor_is_applied_and_journaled():
+    fb = FakeBridge(now_local=NOW, balance=630)
+    fb.set_quote("XAUUSD", 4346.8, 4347.0)
+    cfg = CFG.model_copy(update={"min_volume": {"XAUUSD": 0.02}})
+    run = mk()
+    events = place_run(run, cfg, fb.read_state(), fb, fb.now)
+    assert [l.volume for l in run.legs] == [0.02] * 4
+    raised = [e for e in events if e["kind"] == "leg_volume_raised"]
+    assert len(raised) == 4 and raised[0]["by_risk"] == 0.01 and raised[0]["volume"] == 0.02

@@ -5,6 +5,7 @@ providers:
     risk_pct_per_leg: 1.0
     symbols: { NAS100: NAS100, XAUUSD: XAUUSD, GER40: GER40, EURGBP: EURGBP }
     sl_range: { XAUUSD: [1, 60], NAS100: [5, 500], GER40: [5, 400], EURGBP: [0.0005, 0.02] }
+    min_volume: { XAUUSD: 0.02 }          # optional: lots per leg never go below this, even if that risks more than risk_pct_per_leg
     market_entry_tolerance_pct: 0.3
     limit_max_distance_pct: 1.0
     max_signal_age_sec: 120

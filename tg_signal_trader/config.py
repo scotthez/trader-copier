@@ -14,6 +14,7 @@ class ProviderConfig(BaseModel):
     risk_pct_per_leg: float = 1.0
     symbols: dict[str, str]                         # canonical -> broker symbol
     sl_range: dict[str, tuple[float, float]]        # canonical -> (min, max) SL distance in price units
+    min_volume: dict[str, float] = Field(default_factory=dict)   # canonical -> minimum lots per leg, applied even above risk_pct_per_leg
     market_entry_tolerance_pct: float = 0.3
     limit_max_distance_pct: float = 1.0
     max_signal_age_sec: int = 120

@@ -59,7 +59,12 @@ def place_run(run: SignalRun, cfg: ProviderConfig, state: BridgeState, bridge: B
     expires = fmt_ts(_local_naive(sig.received_at) + timedelta(hours=cfg.pending_ttl_hours)) if sig.entry_type == EntryType.LIMIT else None
     for leg in run.legs:
         try:
-            leg.volume = leg_volume(state.account.balance, cfg.risk_pct_per_leg, entry_ref, sig.sl, spec.sizing())
+            floor = cfg.min_volume.get(sig.symbol, 0.0)
+            leg.volume = leg_volume(state.account.balance, cfg.risk_pct_per_leg, entry_ref, sig.sl, spec.sizing(), floor)
+            if floor > 0:
+                by_risk = leg_volume(state.account.balance, cfg.risk_pct_per_leg, entry_ref, sig.sl, spec.sizing())
+                if leg.volume > by_risk:
+                    events.append(_ev("leg_volume_raised", run, leg=leg.n, by_risk=by_risk, volume=leg.volume, min_volume=floor))
         except ValueError as e:
             leg.state, leg.reason = LegState.CANCELLED, f"sizing: {e}"
             events.append(_ev("leg_cancelled", run, leg=leg.n, reason=leg.reason))
