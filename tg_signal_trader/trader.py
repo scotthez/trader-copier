@@ -256,7 +256,10 @@ class Trader:
             bad.append("crosscheck:entry_type")
         if abs(ex.sl - sig.sl) > 1e-6:
             bad.append("crosscheck:sl")
-        model_tps = [t for t in ex.tps[:3] if t is not None]
+        # Compare the TP numbers the model found, in order, ignoring empty slots: the model may put a
+        # "TP: Open" line in a slot of its own (live, Wolves 2026-09-24: [None, 4257, 4252, 4247] vs the
+        # template's [4257, 4252, 4247]; every number agreed, yet the trade was rejected).
+        model_tps = [t for t in ex.tps if t is not None][:3]
         if len(model_tps) < 3 or any(abs(a - b) > 1e-6 for a, b in zip(model_tps, sig.tps[:3])):
             bad.append("crosscheck:tps")
         if sig.entry_zone and ex.entry_zone and abs(ex.entry_zone[0] - sig.entry_zone[0]) > 1e-6:

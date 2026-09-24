@@ -421,3 +421,17 @@ def test_daily_loss_stop_zero_means_off():
     assert "daily_loss_stop" not in tr.guard_reasons("wolves", fb.read_state())
     fb.account.equity = 5_000                                # even -50% does not block when off
     assert "daily_loss_stop" not in tr.guard_reasons("wolves", fb.read_state())
+
+
+def test_crosscheck_ignores_an_empty_tp_slot_from_tp_open():
+    # live 2026-09-24, Wolves #29904: the model read "TP: Open" as an empty TP1 and shifted the real TPs
+    tr, store, fb, _ = make(entries={LIMIT_ENTRY: _ex(entry_type="LIMIT", entry_zone=[4345, 4343], sl=4335, tps=[None, 4353, 4357, 4362])})
+    inbox(store, LIMIT_ENTRY, 131); tr.tick()
+    assert store.get_run("wolves:131").state != RunState.REJECTED and fb.sent
+
+
+def test_crosscheck_still_rejects_a_misread_tp_number():
+    tr, store, fb, _ = make(entries={LIMIT_ENTRY: _ex(entry_type="LIMIT", entry_zone=[4345, 4343], sl=4335, tps=[None, 4353.5, 4357, 4362])})
+    inbox(store, LIMIT_ENTRY, 132); tr.tick()
+    assert store.get_run("wolves:132").state == RunState.REJECTED and fb.sent == []
+    assert "crosscheck:tps" in next(e for e in store.journal_tail() if e["kind"] == "signal_rejected")["detail"]["reasons"]
