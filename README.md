@@ -25,6 +25,11 @@ template result stands and `entry_crosscheck_unavailable` is journaled). With
 sent at once and checked straight after, and a disagreement closes every leg of that trade
 (`crosscheck_failed_closing`). LIMIT entries are always checked before any order is placed.
 
+Wolves TP typos: when a Wolves limit signal's TPs are out of order or on the wrong side of the entry,
+and exactly one TP disagrees with the pips note written beside it (while at least two others match
+theirs), that TP is replaced by the entry ± pips value (e.g. "TP2 4260 100pips" from 4280 → 4270).
+The fix is journaled as `tp_corrected`; any other malformed ladder is still rejected.
+
 TP ladder: L1 hit → nothing; L2 hit → L3/L4 stop to their entry; L3 hit → L4 stop to TP1; stops only
 ever move one way. `TP4: OPEN` → TP4 = TP3 + (TP3 − TP2). Limit/zone signals become pending orders
 at the near price for 24 h.

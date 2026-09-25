@@ -81,3 +81,45 @@ def test_corpus_counts_and_pinned_samples():
     assert parsed[29603].side == Side.SELL and parsed[29603].entry_type == EntryType.LIMIT and parsed[29603].entry_zone == [4393.0, 4396.0] and parsed[29603].sl == 4408
     assert parsed[29546].side == Side.BUY and parsed[29546].entry_type == EntryType.MARKET and parsed[29546].tps == [4417, 4427, 4437]
     assert parsed[46].side == Side.SELL and parsed[46].sl == 2040 and parsed[46].tps[:3] == [2032, 2030, 2028]
+
+
+# ---- TP typo repair from the pips notes ----------------------------------------------------------
+
+from tg_signal_trader.parsers.wolves import fix_tp_typo
+
+LIVE_29936 = ("Gold 🏆\nPair: XAUUSD 📊\nSide: Short / Sell Limit\nEntry: 4280 4283\nTP: Open\nSL: 4288\n"
+              "Note: past profits do not predict future profits \nRisk 0.5-1-2% \n\n"
+              "TP1 4275 50pips ✅\nTP2 4260 100pips ✅\nTP3 4265 150pips ✅\n\nUse Proper Risk Management")
+
+
+def _parse_text(text, mid=29936):
+    from datetime import datetime, timezone
+    from tg_signal_trader.models import InboxMessage
+    from tg_signal_trader.parsers.wolves import WolvesParser
+    return WolvesParser().parse(InboxMessage(msg_id=mid, chat_id=1, provider="wolves", text=text, ts=datetime.now(timezone.utc)), []).signal
+
+
+def test_live_tp2_typo_is_repaired_from_its_pips_note():
+    sig = _parse_text(LIVE_29936)
+    assert sig.tps == [4275.0, 4270.0, 4265.0] and sig.tp_corrections == {1: 4260.0}
+
+
+def test_well_formed_signal_is_never_touched_even_if_pips_disagree():
+    # in order and on the right side → left exactly as written, whatever the notes say
+    assert fix_tp_typo([4303.0, 4308.0, 4313.0], True, 4297.0, {1: 50, 2: 100, 3: 150}) == ([4303.0, 4308.0, 4313.0], {})
+
+
+def test_no_repair_when_more_than_one_tp_disagrees_or_too_few_agree():
+    assert fix_tp_typo([4275.0, 4260.0, 4255.0], False, 4280.0, {1: 50, 2: 100, 3: 150})[1] == {}   # two off
+    assert fix_tp_typo([4275.0, 4260.0, 4265.0], False, 4280.0, {2: 100, 3: 150})[1] == {}          # only one agrees
+
+
+def test_no_repair_when_the_result_would_still_be_out_of_order():
+    # only TP4 disagrees with its note, but repairing it leaves TP2/TP3 (which match their notes) out of order
+    assert fix_tp_typo([4275.0, 4260.0, 4265.0, 4250.0], False, 4280.0, {1: 50, 2: 200, 3: 150, 4: 400})[1] == {}
+
+
+def test_open_tp4_is_synthesised_from_the_repaired_ladder():
+    text = LIVE_29936.replace("TP3 4265 150pips ✅", "TP3 4265 150pips ✅\nTP4 Open")
+    sig = _parse_text(text)
+    assert sig.tps[:3] == [4275.0, 4270.0, 4265.0] and sig.tps[3] == 4260.0      # 4265 - (4270 - 4265)

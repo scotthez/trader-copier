@@ -82,6 +82,7 @@ class Signal(BaseModel):
     entry_zone: list[float] = Field(default_factory=list)   # [near, far] for LIMIT
     sl: float
     tps: list[float]             # exactly 4
+    tp_corrections: dict[int, float] = Field(default_factory=dict)   # TP index → value as written, where the parser fixed a typo
     received_at: datetime
     raw_text: str
     telegram_msg_id: int

@@ -99,7 +99,8 @@ class Trader:
         self.now_local = now_local or datetime.now
         self.parsers = {p: get_parser(p) for p in cfg.providers}
         self._blocked_notice: dict[str, str] = {}
-        self._deferred_logged: set[tuple[str, int]] = set()   # (provider, msg_id) already journaled as deferred
+        self._deferred_logged: set[tuple[str, int]] = set()
+        self._tp_corrected_logged: set[str] = set()   # (provider, msg_id) already journaled as deferred
         # The quote and entry-crosscheck result seen the FIRST time a signal is evaluated, kept per
         # signal id across any TRANSIENT_GUARDS-triggered retries. validate_signal()'s sl/tp-side and
         # distance checks reference the live quote when entry_zone is empty (a bare MARKET order), so
@@ -167,6 +168,10 @@ class Trader:
             if sig is None and looks_like_entry(msg.text):
                 sig = self._llm_entry(msg, provider)
             if sig is not None:
+                if sig.tp_corrections and sig.id not in self._tp_corrected_logged:
+                    self._tp_corrected_logged.add(sig.id)
+                    self.store.journal(provider, "tp_corrected", {"signal": sig.id, "as_written": {f"TP{i + 1}": v for i, v in sig.tp_corrections.items()},
+                                                                  "used": {f"TP{i + 1}": sig.tps[i] for i in sig.tp_corrections}}, run_id=sig.id)
                 if not self._handle_signal(provider, sig, state):
                     continue   # deferred: leave the inbox message 'new' so it is retried next tick
             elif looks_like_entry(msg.text):
@@ -259,8 +264,11 @@ class Trader:
         # Compare the TP numbers the model found, in order, ignoring empty slots: the model may put a
         # "TP: Open" line in a slot of its own (live, Wolves 2026-09-24: [None, 4257, 4252, 4247] vs the
         # template's [4257, 4252, 4247]; every number agreed, yet the trade was rejected).
+        # The model reads the message as written, so it is compared with the TPs as written; a TP the
+        # parser repaired from its pips note (tp_corrections) is compared at its original value.
+        written = [sig.tp_corrections.get(i, t) for i, t in enumerate(sig.tps)]
         model_tps = [t for t in ex.tps if t is not None][:3]
-        if len(model_tps) < 3 or any(abs(a - b) > 1e-6 for a, b in zip(model_tps, sig.tps[:3])):
+        if len(model_tps) < 3 or any(abs(a - b) > 1e-6 for a, b in zip(model_tps, written[:3])):
             bad.append("crosscheck:tps")
         if sig.entry_zone and ex.entry_zone and abs(ex.entry_zone[0] - sig.entry_zone[0]) > 1e-6:
             bad.append("crosscheck:entry_zone")

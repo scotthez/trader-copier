@@ -435,3 +435,17 @@ def test_crosscheck_still_rejects_a_misread_tp_number():
     inbox(store, LIMIT_ENTRY, 132); tr.tick()
     assert store.get_run("wolves:132").state == RunState.REJECTED and fb.sent == []
     assert "crosscheck:tps" in next(e for e in store.journal_tail() if e["kind"] == "signal_rejected")["detail"]["reasons"]
+
+
+def test_repaired_tp_is_crosschecked_against_the_value_as_written():
+    # the model reads "TP2 4260" as written; that must not count as a disagreement with the repaired 4270
+    LIVE_29936 = ("Gold 🏆\nPair: XAUUSD 📊\nSide: Short / Sell Limit\nEntry: 4280 4283\nTP: Open\nSL: 4288\n\n"
+                  "TP1 4275 50pips ✅\nTP2 4260 100pips ✅\nTP3 4265 150pips ✅")
+    tr, store, fb, _ = make(entries={LIVE_29936: _ex(side="SELL", entry_type="LIMIT", entry_zone=[4280, 4283], sl=4288, tps=[None, 4275, 4260, 4265])},
+                            sl_range={"XAUUSD": (1, 60)}, limit_max_distance_pct=5.0)
+    fb.set_quote("XAUUSD", 4276.0, 4276.2)
+    inbox(store, LIVE_29936, 29936); tr.tick()
+    kinds = [e["kind"] for e in store.journal_tail()]
+    assert "tp_corrected" in kinds and "signal_accepted" in kinds, kinds
+    tps = sorted({c.tp for c in fb.sent if c.type == "open_pending"}, reverse=True)
+    assert tps == [4275.0, 4270.0, 4265.0]
