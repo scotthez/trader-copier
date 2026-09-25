@@ -356,8 +356,14 @@ class Trader:
         if fails:
             run.state = RunState.REJECTED
             self.store.save_run(run)
-            self.store.journal(provider, "signal_rejected", {"reasons": fails, "signal": sig.model_dump(mode="json"), "crosscheck": crosscheck,
-                                                             "age_sec": self._age(sig)}, run_id=run.id)
+            detail = {"reasons": fails, "signal": sig.model_dump(mode="json"), "crosscheck": crosscheck, "age_sec": self._age(sig)}
+            if "tp_not_monotonic" in fails:
+                from .suggest import suggest_tps
+                ref = sig.entry_zone[0] if sig.entry_zone else (quote.mid if quote else None)
+                suggestion = suggest_tps(sig.symbol, sig.side.value, sig.tps, ref, sig.raw_text)
+                if suggestion:
+                    detail["suggestion"] = suggestion
+            self.store.journal(provider, "signal_rejected", detail, run_id=run.id)
             self._signal_quote_cache.pop(sig.id, None)
             self._signal_crosscheck_cache.pop(sig.id, None)
             return True

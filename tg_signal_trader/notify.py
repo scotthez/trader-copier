@@ -51,7 +51,14 @@ def event_line(kind: str, d: dict) -> str | None:
         lots = f"{len(vols)} × {_fmt(vols[0])} lots" if vols and len(set(vols)) == 1 else " / ".join(_fmt(v) for v in vols) + " lots"
         return f"✅ Placed: {describe_signal(d['signal'])} · {lots}"
     if kind == "signal_rejected":
-        return f"⛔ Not placed: {_reasons(d.get('reasons', []))}\n   {describe_signal(d['signal'])}"
+        line = f"⛔ Not placed: {_reasons(d.get('reasons', []))}\n   {describe_signal(d['signal'])}"
+        s = d.get("suggestion")
+        if s:
+            fixes = ", ".join(f"{k} {_fmt(w)} → {_fmt(g)}" for k, (w, g) in s["changed"].items())
+            fixed = dict(d["signal"], tps=s["tps"])
+            line += (f"\n💡 Looks like a typo. Best guess ({s['basis']}): {fixes}"
+                     f"\n   {describe_signal(fixed)}\n   Check it against the channel before placing it yourself.")
+        return line
     if kind == "guard_blocked":
         return f"⛔ Not placed: {_reasons(d.get('reasons', []))}\n   {describe_signal(d['signal'])}"
     if kind == "signal_deferred":

@@ -557,3 +557,17 @@ def test_notifications_can_be_turned_off():
                  now_utc=lambda: clock["utc"], now_local=lambda: clock["local"], alerter=RecordingAlerter())
     inbox(tr2.store, ENTRY, 154); tr2.tick()
     assert tr2.alerter.sent == []
+
+
+def test_rejected_typo_signal_message_carries_a_suggested_trade():
+    LIVE = ("Gold 🏆\nPair: XAUUSD 📊\nSide: Short / Sell Limit\nEntry: 4280 4283\nTP: Open\nSL: 4288\n\n"
+            "TP1 4275 50pips ✅\nTP2 4260 200pips ✅\nTP3 4265 150pips ✅")      # notes can't auto-repair this one
+    tr, store, fb, _ = make(entries={LIVE: _ex(side="SELL", entry_type="LIMIT", entry_zone=[4280, 4283], sl=4288, tps=[None, 4275, 4260, 4265])},
+                            limit_max_distance_pct=5.0)
+    fb.set_quote("XAUUSD", 4276.0, 4276.2)
+    tr.alerter = alerts = RecordingAlerter()
+    inbox(store, LIVE, 160); tr.tick()
+    msg = next(m for m in alerts.sent if "Not placed" in m)
+    assert "TPs out of order" in msg and "💡 Looks like a typo" in msg and "TP2 4260 → 4270" in msg and "4275 / 4270 / 4265" in msg
+    ev = next(e for e in store.journal_tail() if e["kind"] == "signal_rejected")
+    assert ev["detail"]["suggestion"]["tps"] == [4275.0, 4270.0, 4265.0]
