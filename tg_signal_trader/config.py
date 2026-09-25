@@ -73,6 +73,7 @@ class AppConfig(BaseModel):
     session_path: Path = Path("tg_listener.session")
     poll_interval_sec: float = 0.5
     listener_poll_sec: float = 5.0
+    notify_trades: bool = True           # message every placement / fill / TP / SL / SL move / cancel / rejection via the alert bot
     terminal_alert_sec: float = 60.0     # alert (and journal) when a terminal's state.json is missing/older than this (0 = off)      # listener also fetches recent channel messages this often (0 = push updates only)
 
 

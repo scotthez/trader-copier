@@ -98,6 +98,10 @@ class Trader:
                  alerter: Alerter | None = None):
         self.cfg, self.store, self.bridges, self.classifier = cfg, store, bridges, classifier
         self.alerter = alerter or NullAlerter()
+        from .notify import TradeNotifier
+        self.notifier = TradeNotifier(lambda text: self.alerter.send(text), store.get_run)
+        if cfg.notify_trades:
+            store.listeners.append(self.notifier.on_event)
         self._no_state_since: dict[str, datetime] = {}      # provider → first tick with no state.json
         self._terminal_down: dict[str, datetime] = {}       # provider → when terminal_down was raised
         self.now_utc = now_utc or (lambda: datetime.now(timezone.utc))
@@ -151,6 +155,7 @@ class Trader:
             self.process_inbox(provider, state)
             self._finish_postchecks(provider)
             self.sync(provider, state)
+        self.notifier.flush()
 
     def _watch_terminal(self, provider: str, state: BridgeState | None) -> None:
         """Journals and alerts once when a terminal stops updating state.json for terminal_alert_sec, and
@@ -452,11 +457,11 @@ class Trader:
                       and c.action in cfg.management_actions and state is not None and block is None)
         self.store.save_classification(provider, msg.msg_id, msg.text, c.action, c.price, c.confidence, c.reason, executable)
         if not executable:
-            self.store.journal(provider, "management_skipped", {"msg_id": msg.msg_id, "classification": c.model_dump(), "arming": block}, run_id=run.id)
+            self.store.journal(provider, "management_skipped", {"msg_id": msg.msg_id, "text": msg.text[:200], "classification": c.model_dump(), "arming": block}, run_id=run.id)
             return
         events = apply_action(run, c.action, c.price, state, bridge, cfg)
         self.store.save_run(run)
-        self.store.journal(provider, "management_applied", {"msg_id": msg.msg_id, "classification": c.model_dump()}, run_id=run.id)
+        self.store.journal(provider, "management_applied", {"msg_id": msg.msg_id, "text": msg.text[:200], "classification": c.model_dump()}, run_id=run.id)
         for e in events:
             self.store.journal(provider, e.pop("kind"), e, run_id=run.id)
 

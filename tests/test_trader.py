@@ -516,3 +516,44 @@ def test_terminal_alerts_can_be_turned_off():
     tr.alerter = alerts = RecordingAlerter()
     clock["local"] += timedelta(seconds=600); tr.tick()
     assert alerts.sent == []
+
+
+# ---- trade notifications ----------------------------------------------------------------------------
+
+def test_every_trade_step_is_messaged_once_per_trade_per_tick():
+    tr, store, fb, clock = make(entries={ENTRY: _ex()})
+    tr.alerter = alerts = RecordingAlerter()
+    inbox(store, ENTRY, 150); tr.tick()
+    placed = [m for m in alerts.sent if "Placed" in m]
+    assert len(placed) == 1                                                  # 4 legs → one message
+    assert placed[0].startswith("[wolves] XAUUSD BUY (msg #150)") and "4 × " in placed[0] and "SL 4341" in placed[0]
+    alerts.sent.clear()
+    run = store.get_run("wolves:150")
+    fb.hit_tp(run.legs[0].position_ticket); fb.hit_tp(run.legs[1].position_ticket); tr.tick()
+    assert len(alerts.sent) == 1
+    msg = alerts.sent[0]
+    assert "🎯 Leg 1 hit TP" in msg and "🎯 Leg 2 hit TP" in msg and "SL moved to" in msg   # TP2 → BE on legs 3-4
+
+
+def test_rejections_are_explained_in_plain_words():
+    tr, store, fb, _ = make(entries={ENTRY: _ex(sl=4314)}, precheck_market=True)
+    tr.alerter = alerts = RecordingAlerter()
+    inbox(store, ENTRY, 151); tr.tick()
+    assert len(alerts.sent) == 1 and "⛔ Not placed: AI read the sl differently" in alerts.sent[0]
+
+
+def test_provider_management_is_messaged():
+    tr, store, fb, _ = make(entries={ENTRY: _ex()}, management={"close it": Classification(action="close_all", confidence=0.95, reason="x")})
+    tr.alerter = alerts = RecordingAlerter()
+    inbox(store, ENTRY, 152); tr.tick(); alerts.sent.clear()
+    inbox(store, "close it", 153, reply_to=152); tr.tick()
+    assert any('Provider said "close it" → close_all' in m and "Closing leg" in m for m in alerts.sent)
+
+
+def test_notifications_can_be_turned_off():
+    from tg_signal_trader.store import Store
+    tr, store, fb, clock = make(entries={ENTRY: _ex()})
+    tr2 = Trader(tr.cfg.model_copy(update={"notify_trades": False}), Store(":memory:"), {"wolves": fb}, tr.classifier,
+                 now_utc=lambda: clock["utc"], now_local=lambda: clock["local"], alerter=RecordingAlerter())
+    inbox(tr2.store, ENTRY, 154); tr2.tick()
+    assert tr2.alerter.sent == []

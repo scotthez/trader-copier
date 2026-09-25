@@ -70,6 +70,10 @@ Messages do not notify:
 3. `tg-trader alert-test` prints your chat id → add `TELEGRAM_ALERT_CHAT_ID=…` to `.env`.
 4. `tg-trader alert-test` again sends a test alert; restart `tg-trader`.
 
+With the bot set up, every trade is also messaged (`notify_trades: true`, the default): placed (with
+prices and lots), not placed (with the reason), filled, TP / SL hit, SL moved, cancelled, provider
+instructions applied or ignored, and failures, as one message per trade per moment.
+
 ## Arming guard
 
 Every provider has `expected_login` and `live`. The trader sends **no** command — no entries, no

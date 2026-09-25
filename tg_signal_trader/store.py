@@ -24,6 +24,7 @@ class Store:
         self.conn = sqlite3.connect(str(path), isolation_level=None)   # autocommit
         self.conn.row_factory = sqlite3.Row
         self.conn.executescript(_SCHEMA)
+        self.listeners: list = []      # callables(provider, kind, detail, run_id), told about every journal entry
 
     # inbox
     def add_inbox(self, m: InboxMessage) -> bool:
@@ -76,6 +77,11 @@ class Store:
     def journal(self, provider: str, kind: str, detail: dict, run_id: str | None = None) -> None:
         self.conn.execute("INSERT INTO journal (ts, provider, kind, run_id, detail) VALUES (?,?,?,?,?)",
                           (_now(), provider, kind, run_id, json.dumps(detail, default=str)))
+        for listener in self.listeners:
+            try:
+                listener(provider, kind, detail, run_id)
+            except Exception:       # a notification problem must never break journaling or trading
+                pass
 
     def journal_tail(self, n: int = 50) -> list[dict]:
         rows = self.conn.execute("SELECT * FROM journal ORDER BY id DESC LIMIT ?", (n,))
