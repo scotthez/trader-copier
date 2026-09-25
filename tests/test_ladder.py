@@ -87,6 +87,8 @@ def test_pending_placement_fill_expiry_and_cancel_on_sl():
     fb.fill_pending(run.legs[0].order_ticket); fb.fill_pending(run.legs[1].order_ticket); pump(run, fb)
     assert run.legs[0].state == LegState.OPEN and run.legs[0].entry_price == 4390.0 and run.legs[0].position_ticket == run.legs[0].order_ticket
     fb.expire_order(run.legs[2].order_ticket); pump(run, fb)
+    assert run.legs[2].state == LegState.PENDING_ORDER                   # within the grace: could be a lagging snapshot
+    fb.advance(31); pump(run, fb)
     assert run.legs[2].state == LegState.CANCELLED and "gone" in run.legs[2].reason
     fb.hit_sl(run.legs[0].position_ticket); pump(run, fb)
     assert run.pendings_cancelled and any(c.type == "cancel" and c.order == run.legs[3].order_ticket for c in fb.sent)
@@ -165,3 +167,35 @@ def test_min_volume_floor_is_applied_and_journaled():
     assert [l.volume for l in run.legs] == [0.02] * 4
     raised = [e for e in events if e["kind"] == "leg_volume_raised"]
     assert len(raised) == 4 and raised[0]["by_risk"] == 0.01 and raised[0]["volume"] == 0.02
+
+
+def test_pending_order_missing_from_a_lagging_snapshot_is_not_cancelled():
+    # live 2026-09-25, Wolves #29931: results arrived before state.json listed the new orders, and
+    # the legs were declared gone 0.5s after placement while the orders sat live at the broker.
+    from datetime import timedelta
+    from tg_signal_trader.ladder import MISSING_GRACE_SEC
+    fb, run = bridge(), mk(entry_type=EntryType.LIMIT, zone=[4340.0, 4338.0], sl=4330.0, tps=(4345.0, 4350.0, 4355.0))
+    stale = fb.read_state()                                   # snapshot taken before the orders exist
+    place_run(run, CFG, stale, fb, fb.now)
+    apply_results(run, fb.read_results())
+    assert [l.state for l in run.legs] == [LegState.PENDING_ORDER] * 3
+    ev = sync_run(run, CFG, stale, fb, fb.now)                # lagging snapshot: no orders listed
+    assert not [e for e in ev if e["kind"] == "leg_cancelled"] and all(l.state == LegState.PENDING_ORDER for l in run.legs)
+    ev = sync_run(run, CFG, fb.read_state(), fb, fb.now + timedelta(seconds=1))   # snapshot catches up
+    assert all(l.state == LegState.PENDING_ORDER and l.missing_since is None for l in run.legs)
+    # an order that really disappears is still cancelled once the grace has passed
+    fb.expire_order(run.legs[0].order_ticket)
+    t = fb.now + timedelta(seconds=2)
+    sync_run(run, CFG, fb.read_state(), fb, t)
+    sync_run(run, CFG, fb.read_state(), fb, t + timedelta(seconds=MISSING_GRACE_SEC + 1))
+    assert run.legs[0].state == LegState.CANCELLED and run.legs[1].state == LegState.PENDING_ORDER
+
+
+def test_second_cancel_message_does_not_resend_an_inflight_cancel():
+    fb, run = bridge(), mk(entry_type=EntryType.LIMIT, zone=[4340.0, 4338.0], sl=4330.0, tps=(4345.0, 4350.0, 4355.0))
+    place_run(run, CFG, fb.read_state(), fb, fb.now); pump(run, fb)
+    first = apply_action(run, "cancel_pending", None, fb.read_state(), fb, CFG)
+    second = apply_action(run, "cancel_pending", None, fb.read_state(), fb, CFG)
+    assert len(first) == 3 and second == []
+    pump(run, fb)
+    assert all(l.state == LegState.CANCELLED and l.reason == "cancelled by command" for l in run.legs)

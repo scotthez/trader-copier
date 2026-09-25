@@ -118,14 +118,21 @@ def _detect(run: SignalRun, state: BridgeState, now_local: datetime) -> list[dic
         comment = leg.comment(run.signal.id)
         if leg.state == LegState.PENDING_ORDER and leg.inflight_cmd is None:
             order = next((o for o in state.orders if o.ticket == leg.order_ticket), None)
-            if order is None:
-                pos = state.position_by_comment(comment)
-                if pos is not None:
-                    leg.state, leg.position_ticket, leg.entry_price = LegState.OPEN, pos.ticket, pos.price_open
-                    events.append(_ev("leg_filled", run, leg=leg.n, price=pos.price_open))
-                else:
-                    leg.state, leg.reason = LegState.CANCELLED, "pending order gone (expired or cancelled at broker)"
-                    events.append(_ev("leg_cancelled", run, leg=leg.n, reason=leg.reason))
+            pos = state.position_by_comment(comment) if order is None else None
+            if order is not None:
+                leg.missing_since = None
+            elif pos is not None:
+                leg.state, leg.position_ticket, leg.entry_price, leg.missing_since = LegState.OPEN, pos.ticket, pos.price_open, None
+                events.append(_ev("leg_filled", run, leg=leg.n, price=pos.price_open))
+            # The EA appends a command's result before its next state.json lists the new order, so a
+            # just-placed order can be absent from the snapshot for a tick or two (live, Wolves
+            # 2026-09-25: two legs declared "gone" 0.5s after placement, left unmanaged at the broker).
+            # Same grace as a vanished position.
+            elif leg.missing_since is None:
+                leg.missing_since = now_local
+            elif (now_local - leg.missing_since).total_seconds() > MISSING_GRACE_SEC:
+                leg.state, leg.reason = LegState.CANCELLED, "pending order gone (expired or cancelled at broker)"
+                events.append(_ev("leg_cancelled", run, leg=leg.n, reason=leg.reason))
         elif leg.state == LegState.OPEN and leg.inflight_cmd is None:
             pos = next((p for p in state.positions if p.ticket == leg.position_ticket), None)
             if pos is not None:
@@ -209,15 +216,20 @@ def sync_run(run: SignalRun, cfg: ProviderConfig, state: BridgeState, bridge: Br
 
 def apply_action(run: SignalRun, action: str, price: float | None, state: BridgeState, bridge: Bridge, cfg: ProviderConfig) -> list[dict]:
     events: list[dict] = []
+    # Legs with a command already in flight are skipped: a second "delete" message moments after the
+    # first used to send a duplicate cancel, whose "order not found" hid the first cancel's success.
     if action == "close_all":
         for leg in run.open_legs():
-            events.append(_send(run, leg, bridge, "close", position=leg.position_ticket))
+            if leg.inflight_cmd is None:
+                events.append(_send(run, leg, bridge, "close", position=leg.position_ticket))
         for leg in run.pending_legs():
-            events.append(_send(run, leg, bridge, "cancel", order=leg.order_ticket))
+            if leg.inflight_cmd is None:
+                events.append(_send(run, leg, bridge, "cancel", order=leg.order_ticket))
         run.pendings_cancelled = True
     elif action == "cancel_pending":
         for leg in run.pending_legs():
-            events.append(_send(run, leg, bridge, "cancel", order=leg.order_ticket))
+            if leg.inflight_cmd is None:
+                events.append(_send(run, leg, bridge, "cancel", order=leg.order_ticket))
         run.pendings_cancelled = True
     elif action == "break_even":
         for leg in run.open_legs():
