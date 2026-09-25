@@ -90,3 +90,27 @@ def test_status_shows_arming_and_bridge_test_refuses_real():
     assert b.sent == [] and "REAL" in lines[0]
     lines = bridge_test(b, "XAUUSD", now_local=lambda: LOCAL0, sleep=lambda s: None, allow_real=True)
     assert [c.type for c in b.sent] == ["open_market", "modify_sl", "close"]
+
+
+def test_alert_test_guides_setup_and_sends(monkeypatch):
+    from tg_signal_trader.cli import alert_test
+    from tg_signal_trader.config import Secrets
+    import tg_signal_trader.alerts as alerts
+    out = []
+    assert alert_test(Secrets(), echo=out.append) == 1 and "BotFather" in out[-1]
+    monkeypatch.setattr(alerts, "discover_chat_ids", lambda token: [("123456", "Scott")])
+    out.clear()
+    assert alert_test(Secrets(alert_bot_token="t"), echo=out.append) == 1 and "TELEGRAM_ALERT_CHAT_ID=123456" in out[1]
+    sent = []
+    monkeypatch.setattr(alerts.TelegramBotAlerter, "send_now", lambda self, text: sent.append((self.chat_id, text)))
+    out.clear()
+    assert alert_test(Secrets(alert_bot_token="t", alert_chat_id="123456"), echo=out.append) == 0 and sent[0][0] == "123456"
+
+
+def test_bot_alerter_never_raises_into_the_trader(monkeypatch):
+    import time
+    import tg_signal_trader.alerts as alerts
+    def boom(*a, **k): raise RuntimeError("telegram down")
+    monkeypatch.setattr(alerts.httpx, "post", boom)
+    alerts.TelegramBotAlerter("t", "1").send("hello")                # background thread swallows the error
+    time.sleep(0.05)

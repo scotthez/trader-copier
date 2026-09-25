@@ -449,3 +449,70 @@ def test_repaired_tp_is_crosschecked_against_the_value_as_written():
     assert "tp_corrected" in kinds and "signal_accepted" in kinds, kinds
     tps = sorted({c.tp for c in fb.sent if c.type == "open_pending"}, reverse=True)
     assert tps == [4275.0, 4270.0, 4265.0]
+
+
+# ---- terminal outages: wait for state.json, alert when a terminal goes quiet ---------------------
+
+class RecordingAlerter:
+    def __init__(self): self.sent = []
+    def send(self, text): self.sent.append(text)
+
+
+def _terminal_off(fb):
+    real = fb.read_state
+    fb.read_state = lambda: None
+    return lambda: setattr(fb, "read_state", real)
+
+
+def test_signal_waits_for_a_missing_terminal_then_trades():
+    # live 2026-09-25, Wolves #29958: no state.json → rejected as no_quote on the spot
+    tr, store, fb, clock = make()
+    back_on = _terminal_off(fb)
+    inbox(store, ENTRY, 140); tr.tick()
+    assert store.get_run("wolves:140") is None and fb.sent == []
+    assert any(e["kind"] == "signal_deferred" and e["detail"]["reasons"] == ["no_state"] for e in store.journal_tail())
+    back_on()
+    clock["utc"] += timedelta(seconds=20); tr.tick()
+    assert store.get_run("wolves:140").state in (RunState.PLACING, RunState.ACTIVE) and fb.sent
+
+
+def test_signal_is_rejected_once_it_ages_out_waiting_for_the_terminal():
+    tr, store, fb, clock = make()
+    _terminal_off(fb)
+    inbox(store, ENTRY, 141); tr.tick()
+    clock["utc"] += timedelta(seconds=200); tr.tick()
+    run = store.get_run("wolves:141")
+    assert run.state == RunState.REJECTED and fb.sent == []
+    reasons = next(e for e in store.journal_tail() if e["kind"] == "signal_rejected")["detail"]["reasons"]
+    assert "no_state" in reasons and "stale" in reasons
+
+
+def test_terminal_down_and_up_alert_once_each():
+    tr, store, fb, clock = make()
+    tr.alerter = alerts = RecordingAlerter()
+    back_on = _terminal_off(fb)
+    tr.tick()                                                       # first tick without state
+    clock["local"] += timedelta(seconds=30); tr.tick()
+    assert alerts.sent == []                                        # not yet: under terminal_alert_sec (60)
+    clock["local"] += timedelta(seconds=31); tr.tick()
+    clock["local"] += timedelta(seconds=30); tr.tick()
+    assert len(alerts.sent) == 1 and "wolves" in alerts.sent[0] and "not responding" in alerts.sent[0]
+    back_on(); fb.now = clock["local"]; tr.tick()
+    assert len(alerts.sent) == 2 and alerts.sent[1].startswith("✅ wolves")
+    kinds = [e["kind"] for e in store.journal_tail()]
+    assert kinds.count("terminal_down") == 1 and kinds.count("terminal_up") == 1
+
+
+def test_frozen_state_json_also_raises_the_alert():
+    tr, store, fb, clock = make()
+    tr.alerter = alerts = RecordingAlerter()
+    clock["local"] += timedelta(seconds=90); tr.tick()             # state.json exists but is 90s old
+    assert len(alerts.sent) == 1 and "not updated for 90s" in alerts.sent[0]
+
+
+def test_terminal_alerts_can_be_turned_off():
+    tr, store, fb, clock = make()
+    tr.cfg.terminal_alert_sec = 0
+    tr.alerter = alerts = RecordingAlerter()
+    clock["local"] += timedelta(seconds=600); tr.tick()
+    assert alerts.sent == []

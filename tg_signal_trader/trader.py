@@ -4,6 +4,7 @@ import threading
 import time
 from datetime import datetime, timezone
 from typing import Callable
+from .alerts import Alerter, NullAlerter
 from .bridge import Bridge, BridgeState, Command, CommandResult
 from .classifier import Classifier, RunContext
 from .config import AppConfig
@@ -23,7 +24,7 @@ STALE_STATE_SEC = 5.0
 # real reason not to trade and stays a permanent rejection. The natural bound against retrying
 # forever is validate_signal's own 'stale' check (the signal's own age vs max_signal_age_sec) — if
 # the terminal never recovers, the signal eventually ages out there and is rejected for real.
-TRANSIENT_GUARDS = frozenset({"terminal_stale"})
+TRANSIENT_GUARDS = frozenset({"terminal_stale", "no_state"})
 
 
 class _Background:
@@ -93,8 +94,12 @@ class DryRunBridge:
 
 class Trader:
     def __init__(self, cfg: AppConfig, store: Store, bridges: dict[str, Bridge], classifier: Classifier,
-                 now_utc: Callable[[], datetime] | None = None, now_local: Callable[[], datetime] | None = None):
+                 now_utc: Callable[[], datetime] | None = None, now_local: Callable[[], datetime] | None = None,
+                 alerter: Alerter | None = None):
         self.cfg, self.store, self.bridges, self.classifier = cfg, store, bridges, classifier
+        self.alerter = alerter or NullAlerter()
+        self._no_state_since: dict[str, datetime] = {}      # provider → first tick with no state.json
+        self._terminal_down: dict[str, datetime] = {}       # provider → when terminal_down was raised
         self.now_utc = now_utc or (lambda: datetime.now(timezone.utc))
         self.now_local = now_local or datetime.now
         self.parsers = {p: get_parser(p) for p in cfg.providers}
@@ -136,6 +141,7 @@ class Trader:
             state = self.bridges[provider].read_state()
             if state is not None:
                 self._track_start_of_day(provider, state)
+            self._watch_terminal(provider, state)
             block = self.arming_block(provider, state)
             if block and self._blocked_notice.get(provider) != block:
                 self._blocked_notice[provider] = block
@@ -145,6 +151,29 @@ class Trader:
             self.process_inbox(provider, state)
             self._finish_postchecks(provider)
             self.sync(provider, state)
+
+    def _watch_terminal(self, provider: str, state: BridgeState | None) -> None:
+        """Journals and alerts once when a terminal stops updating state.json for terminal_alert_sec, and
+        once when it recovers (live miss, Wolves 2026-09-25: the terminal had stopped, and a good signal
+        was rejected as no_quote with nobody aware anything was down)."""
+        limit = self.cfg.terminal_alert_sec
+        if limit <= 0:
+            return
+        now = self.now_local()
+        if state is not None:
+            self._no_state_since.pop(provider, None)
+            silent_for, why = state.age_sec(now), f"state.json not updated for {state.age_sec(now):.0f}s"
+        else:
+            silent_for, why = (now - self._no_state_since.setdefault(provider, now)).total_seconds(), "no state.json"
+        if silent_for >= limit and provider not in self._terminal_down:
+            self._terminal_down[provider] = now
+            self.store.journal(provider, "terminal_down", {"reason": why})
+            self.alerter.send(f"⚠️ {provider}: MT5 terminal not responding ({why}). "
+                              f"{provider} signals can't be traded until it's back. Is the terminal open with SignalBridge attached?")
+        elif silent_for < limit and provider in self._terminal_down:
+            down = (now - self._terminal_down.pop(provider)).total_seconds() + limit
+            self.store.journal(provider, "terminal_up", {"down_sec": round(down)})
+            self.alerter.send(f"✅ {provider}: MT5 terminal back (down about {down / 60:.0f} min).")
 
     def sync(self, provider: str, state: BridgeState | None) -> None:
         bridge, cfg = self.bridges[provider], self.cfg.providers[provider]
@@ -283,6 +312,16 @@ class Trader:
         if it was deferred and must be retried on a later tick (see TRANSIENT_GUARDS)."""
         cfg, bridge = self.cfg.providers[provider], self.bridges[provider]
         run = SignalRun.from_signal(sig)
+        if state is None:
+            state = bridge.read_state()
+        if state is None and self._age(sig) <= cfg.max_signal_age_sec:
+            # No state.json at all: the terminal is restarting, down, or unreadable. Wait for it (up to the
+            # signal's own max age) rather than rejecting a good signal as no_quote on the spot.
+            key = (provider, sig.telegram_msg_id)
+            if key not in self._deferred_logged:
+                self._deferred_logged.add(key)
+                self.store.journal(provider, "signal_deferred", {"reasons": ["no_state"], "signal_id": sig.id})
+            return False
         broker_symbol = cfg.symbols.get(sig.symbol)
         spec = state.symbols.get(broker_symbol) if (state and broker_symbol) else None
         live_quote = spec.quote() if spec else None
@@ -291,6 +330,8 @@ class Trader:
         else:
             quote = self._signal_quote_cache.get(sig.id)
         fails = validate_signal(sig, cfg, quote, self.now_utc())
+        if state is None:
+            fails.append("no_state")          # waited the signal's full max age; the terminal never came back
         crosscheck: dict | None = None
         check = self.cfg.llm.entry_crosscheck and sig.parsed_by != "llm"
         postcheck = check and sig.entry_type == EntryType.MARKET and self.cfg.llm.market_crosscheck_after

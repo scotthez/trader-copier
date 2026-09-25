@@ -54,6 +54,33 @@ def make_classifier(cfg: AppConfig, secrets: Secrets) -> Classifier:
     return ClaudeClassifier(cfg.llm.model, cfg.llm.timeout_sec, api_key=secrets.anthropic_api_key)
 
 
+def make_alerter(secrets: Secrets):
+    from .alerts import NullAlerter, TelegramBotAlerter
+    if secrets.alert_bot_token and secrets.alert_chat_id:
+        return TelegramBotAlerter(secrets.alert_bot_token, secrets.alert_chat_id)
+    log.warning("phone alerts off: set TELEGRAM_ALERT_BOT_TOKEN and TELEGRAM_ALERT_CHAT_ID (see `tg-trader alert-test`)")
+    return NullAlerter()
+
+
+def alert_test(secrets: Secrets, echo=print) -> int:
+    from .alerts import TelegramBotAlerter, discover_chat_ids
+    if not secrets.alert_bot_token:
+        echo("TELEGRAM_ALERT_BOT_TOKEN is not set: create a bot with @BotFather, put its token in .env, then re-run.")
+        return 1
+    if not secrets.alert_chat_id:
+        chats = discover_chat_ids(secrets.alert_bot_token)
+        if not chats:
+            echo("No chats yet: open your bot in Telegram, press Start (or send it any message), then re-run.")
+            return 1
+        echo("Put one of these in .env as TELEGRAM_ALERT_CHAT_ID, then re-run to send a test:")
+        for cid, name in chats:
+            echo(f"  TELEGRAM_ALERT_CHAT_ID={cid}    ({name})")
+        return 1
+    TelegramBotAlerter(secrets.alert_bot_token, secrets.alert_chat_id).send_now("✅ tg-trader alerts are working.")
+    echo("Test alert sent - check your phone.")
+    return 0
+
+
 def classify_eval(classifier: Classifier, provider: str, export_dir: Path, n: int, echo=print, ignore_patterns: list[str] | None = None) -> dict[str, int]:
     """Runs the last n non-entry provider messages through the classifier and prints each verdict."""
     from .export import read_export
@@ -188,6 +215,7 @@ def main(argv: list[str] | None = None) -> int:
     rp = sub.add_parser("replay"); rp.add_argument("provider"); rp.add_argument("export_dir")
     sub.add_parser("resolve-chats")
     jn = sub.add_parser("journal"); jn.add_argument("--n", type=int, default=50)
+    sub.add_parser("alert-test", help="send a test phone alert (or list chat ids if TELEGRAM_ALERT_CHAT_ID is unset)")
     ce = sub.add_parser("classify-eval"); ce.add_argument("provider"); ce.add_argument("export_dir"); ce.add_argument("--n", type=int, default=40)
     a = ap.parse_args(argv)
 
@@ -223,6 +251,8 @@ def main(argv: list[str] | None = None) -> int:
             print("Re-run with --confirm on a DEMO account."); return 1
         sym = next(iter(cfg.providers[a.provider].symbols.values()))
         print("\n".join(bridge_test(b, sym, allow_real=a.live))); return 0
+    if a.cmd == "alert-test":
+        return alert_test(Secrets.from_env())
     if a.cmd == "classify-eval":
         classify_eval(make_classifier(cfg, Secrets.from_env()), a.provider, Path(a.export_dir), a.n,
                       ignore_patterns=cfg.providers[a.provider].ignore_patterns); return 0
@@ -237,7 +267,7 @@ def main(argv: list[str] | None = None) -> int:
         if a.dry_run:
             bridges = {n: DryRunBridge(b, store, n) for n, b in bridges.items()}
             log.warning("DRY RUN: commands are journaled, not sent")
-        trader = Trader(cfg, store, bridges, classifier)
+        trader = Trader(cfg, store, bridges, classifier, alerter=make_alerter(Secrets.from_env()))
         trader.startup_reconcile()
         while True:
             trader.tick()

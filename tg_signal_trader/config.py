@@ -72,7 +72,8 @@ class AppConfig(BaseModel):
     db_path: Path = Path("tg_signal_trader.sqlite")
     session_path: Path = Path("tg_listener.session")
     poll_interval_sec: float = 0.5
-    listener_poll_sec: float = 5.0      # listener also fetches recent channel messages this often (0 = push updates only)
+    listener_poll_sec: float = 5.0
+    terminal_alert_sec: float = 60.0     # alert (and journal) when a terminal's state.json is missing/older than this (0 = off)      # listener also fetches recent channel messages this often (0 = push updates only)
 
 
 def load_config(path: str | Path) -> AppConfig:
@@ -87,6 +88,8 @@ class Secrets(BaseModel):
     anthropic_api_key: str | None = None
     openrouter_api_key: str | None = None
     openrouter_model: str | None = None      # overrides llm.model when llm.provider is openrouter
+    alert_bot_token: str | None = None       # TELEGRAM_ALERT_BOT_TOKEN: bot from @BotFather that sends phone alerts
+    alert_chat_id: str | None = None         # TELEGRAM_ALERT_CHAT_ID: your chat with that bot (`tg-trader alert-test` finds it)
 
     @classmethod
     def from_env(cls) -> "Secrets":
@@ -95,7 +98,9 @@ class Secrets(BaseModel):
                    telegram_api_hash=os.environ.get("TELEGRAM_API_HASH", "").strip() or None,
                    anthropic_api_key=os.environ.get("ANTHROPIC_API_KEY") or None,
                    openrouter_api_key=os.environ.get("OPENROUTER_API_KEY") or None,
-                   openrouter_model=os.environ.get("OPENROUTER_MODEL") or None)
+                   openrouter_model=os.environ.get("OPENROUTER_MODEL") or None,
+                   alert_bot_token=os.environ.get("TELEGRAM_ALERT_BOT_TOKEN", "").strip() or None,
+                   alert_chat_id=os.environ.get("TELEGRAM_ALERT_CHAT_ID", "").strip() or None)
 
     def require_telegram(self) -> "Secrets":
         if not self.telegram_api_id or not self.telegram_api_hash:

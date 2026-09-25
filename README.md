@@ -56,6 +56,20 @@ at the near price for 24 h.
    on a DEMO account `tg-trader bridge-test lewis --confirm` (min-lot open / modify / close).
 6. Install `deploy/*.service`, `systemctl enable --now tg-listener tg-trader`.
 
+## Phone alerts
+
+When a terminal's `state.json` is missing or has not updated for `terminal_alert_sec` (default 60),
+the trader journals `terminal_down` and sends a Telegram alert; `terminal_up` follows when it
+recovers. A signal that arrives while a terminal is silent waits for it (up to `max_signal_age_sec`)
+instead of being rejected as `no_quote`. Alerts come from a bot, because messages to your own Saved
+Messages do not notify:
+
+1. In Telegram, message @BotFather → `/newbot` → copy the token into `.env` as
+   `TELEGRAM_ALERT_BOT_TOKEN=…`.
+2. Open your new bot and press Start.
+3. `tg-trader alert-test` prints your chat id → add `TELEGRAM_ALERT_CHAT_ID=…` to `.env`.
+4. `tg-trader alert-test` again sends a test alert; restart `tg-trader`.
+
 ## Arming guard
 
 Every provider has `expected_login` and `live`. The trader sends **no** command — no entries, no
