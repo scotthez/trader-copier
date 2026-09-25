@@ -2,11 +2,23 @@
 #define SIGNALBRIDGE_JSON_MQH
 // Flat JSON objects only: {"k":"v","n":1.5}. No nesting, no arrays — the event format never needs them.
 
+// Escapes everything JSON forbids raw inside a string. Control characters matter: an order/position/deal
+// comment with a line break (brokers and mobile apps write those) used to make state.json invalid JSON.
 string JsonEscape(const string s)
 {
-   string out = s;
-   StringReplace(out, "\\", "\\\\");
-   StringReplace(out, "\"", "\\\"");
+   string out = "";
+   int n = StringLen(s);
+   for(int i = 0; i < n; i++)
+   {
+      ushort c = StringGetCharacter(s, i);
+      if(c == '\\')      out += "\\\\";
+      else if(c == '"')  out += "\\\"";
+      else if(c == '\n') out += "\\n";
+      else if(c == '\r') out += "\\r";
+      else if(c == '\t') out += "\\t";
+      else if(c < 32)    out += " ";
+      else               out += ShortToString(c);
+   }
    return out;
 }
 

@@ -17,6 +17,7 @@ void Test_Json()
    AssertTrue(JsonGetLong("{\"position\":123456}", "position", l) && l == 123456, "json: get long");
    AssertTrue(JsonGetDouble("{\"volume\":0.12}", "volume", d) && d == 0.12, "json: get double");
    AssertTrue(!JsonGetString("{\"a\":1}", "b", s), "json: missing key");
+   AssertEqStr("a\\nb\\tc\\\"d\\\\e f", JsonEscape("a\nb\tc\"d\\e" + ShortToString(1) + "f"), "json: escape control chars");
 }
 
 void Test_LineFile()

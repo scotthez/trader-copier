@@ -60,3 +60,22 @@ def test_fake_bridge_simulates_lifecycle():
     fb.advance(3600)
     assert fb.read_state().ts_local() == datetime(2026, 9, 18, 14, 0, 0)
     assert [c.cmd_id for c in fb.sent] == ["c1", "c2", "c3", "c4", "c5", "c6"]
+
+
+def test_state_with_a_raw_line_break_in_a_comment_is_still_read(tmp_path: Path):
+    # live 2026-09-25, Wolves: an old SignalBridge wrote a comment's line break unescaped → invalid JSON → hours of NO STATE
+    raw = json.dumps(STATE).replace('"comment": "sig:w:1:L2"', '"comment": "manual\nfrom phone"')
+    assert "\n" in raw
+    (tmp_path / "state.json").write_text(raw)
+    b = FileBridge(tmp_path)
+    st = b.read_state()
+    assert st is not None and st.orders[0].comment == "manual\nfrom phone" and b.last_state_error is None
+
+
+def test_unreadable_state_reason_is_kept_for_status(tmp_path: Path):
+    b = FileBridge(tmp_path)
+    assert b.read_state() is None and "FileNotFoundError" in b.last_state_error
+    (tmp_path / "state.json").write_text('{"ts": "2026.09.18 13:20:07", "account": ')
+    assert b.read_state() is None and b.last_state_error.startswith("unreadable state.json")
+    (tmp_path / "state.json").write_text(json.dumps(STATE))
+    assert b.read_state() is not None and b.last_state_error is None

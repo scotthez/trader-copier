@@ -131,7 +131,8 @@ def status_lines(cfg: AppConfig, store: Store, bridges: dict[str, Bridge], now_l
     for name, p in cfg.providers.items():
         st = bridges[name].read_state()
         if st is None:
-            lines.append(f"[{name}] NO STATE at {p.bridge_dir} — is SignalBridge attached?")
+            why = getattr(bridges[name], "last_state_error", None)
+            lines.append(f"[{name}] NO STATE at {p.bridge_dir} — " + (why or "is SignalBridge attached?"))
             continue
         age = st.age_sec(now_local())
         flag = "OK" if age <= 5 else "STALE"

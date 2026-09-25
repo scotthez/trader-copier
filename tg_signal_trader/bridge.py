@@ -104,6 +104,7 @@ class FileBridge:
     def __init__(self, directory: str | Path, results_offset: int = 0):
         self.dir = Path(directory)
         self.results_offset = results_offset
+        self.last_state_error: str | None = None     # why the last read_state() returned None (shown by `status`)
 
     def send(self, cmd: Command) -> None:
         self.dir.mkdir(parents=True, exist_ok=True)
@@ -138,9 +139,24 @@ class FileBridge:
     def read_state(self) -> BridgeState | None:
         p = self.dir / "state.json"
         try:
-            return BridgeState.model_validate_json(p.read_text(encoding="utf-8"))
-        except (OSError, ValueError):
+            text = p.read_text(encoding="utf-8", errors="replace")
+        except OSError as e:
+            self.last_state_error = f"{type(e).__name__}: {e}"
             return None
+        try:
+            state = BridgeState.model_validate_json(text)
+        except ValueError:
+            # Older SignalBridge builds wrote order/position/deal comments without escaping control
+            # characters, so one comment with a line break made the whole file invalid JSON (live,
+            # Wolves 2026-09-25: hours of "NO STATE" while the EA was writing every second). Python's
+            # non-strict parser accepts raw control characters inside strings.
+            try:
+                state = BridgeState.model_validate(json.loads(text, strict=False))
+            except ValueError as e:
+                self.last_state_error = f"unreadable state.json: {str(e).splitlines()[0][:200]}"
+                return None
+        self.last_state_error = None
+        return state
 
 
 class FakeBridge:
