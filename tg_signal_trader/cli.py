@@ -142,7 +142,11 @@ def status_lines(cfg: AppConfig, store: Store, bridges: dict[str, Bridge], now_l
             armed = "NOT ARMED (REAL account, live: false)"
         else:
             armed = "ARMED" if p.live else "armed (demo)"
-        lines.append(f"[{name}] {flag} age {age:.1f}s | login {st.account.login} {st.account.trade_mode} | {armed} | balance {st.account.balance:g} equity {st.account.equity:g} | hedging {st.account.hedging}")
+        level = st.account.margin_level_pct()
+        margin = f"margin level {level:.0f}%" if level is not None else "no margin used"
+        if p.min_margin_level_pct > 0 and level is not None and level < p.min_margin_level_pct:
+            margin += f" (BELOW {p.min_margin_level_pct:g}%: no new entries)"
+        lines.append(f"[{name}] {flag} age {age:.1f}s | login {st.account.login} {st.account.trade_mode} | {armed} | balance {st.account.balance:g} equity {st.account.equity:g} | {margin} | hedging {st.account.hedging}")
         for sym, s in st.symbols.items():
             lines.append(f"    {sym}: bid {s.bid} ask {s.ask} step {s.volume_step} min {s.volume_min} tick_value {s.tick_value} trade_allowed {s.trade_allowed}")
         lines.append(f"    positions {len(st.positions)} orders {len(st.orders)}")

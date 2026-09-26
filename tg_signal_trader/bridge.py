@@ -36,6 +36,11 @@ class Account(BaseModel):
     login: int; balance: float; equity: float; margin_free: float; hedging: bool
     trade_mode: str = "UNKNOWN"     # DEMO | CONTEST | REAL (from ACCOUNT_TRADE_MODE)
 
+    def margin_level_pct(self) -> float | None:
+        """Equity / used margin × 100, as MT5 shows it; None when no margin is in use."""
+        used = self.equity - self.margin_free
+        return self.equity / used * 100 if used > 1e-9 else None
+
 
 class Position(BaseModel):
     ticket: int; symbol: str; type: str; volume: float; price_open: float; sl: float; tp: float

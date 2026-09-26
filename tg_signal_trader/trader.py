@@ -253,6 +253,11 @@ class Trader:
             reasons.append("max_open_signals")
         if sum(len(r.open_legs()) + len(r.pending_legs()) + len(r.placing_legs()) for r in live) >= cfg.max_legs_open:
             reasons.append("max_legs_open")
+        level = state.account.margin_level_pct()
+        if cfg.min_margin_level_pct > 0 and level is not None and level < cfg.min_margin_level_pct:
+            # Other copiers on the same account share its margin; the bot never closes their trades,
+            # it only stops adding its own while the account is this loaded.
+            reasons.append("margin_level_low")
         sod = self.store.kv_get(self._sod_key(provider))
         if cfg.daily_loss_stop_pct > 0 and sod and float(sod) > 0 and (float(sod) - state.account.equity) / float(sod) * 100 >= cfg.daily_loss_stop_pct:
             reasons.append("daily_loss_stop")
@@ -385,7 +390,9 @@ class Trader:
                 return False
             run.state = RunState.REJECTED
             self.store.save_run(run)
-            self.store.journal(provider, "guard_blocked", {"reasons": guards, "signal": sig.model_dump(mode="json")}, run_id=run.id)
+            level = state.account.margin_level_pct() if state is not None else None
+            self.store.journal(provider, "guard_blocked", {"reasons": guards, "signal": sig.model_dump(mode="json"),
+                                                           "margin_level_pct": round(level) if level is not None else None}, run_id=run.id)
             self._signal_quote_cache.pop(sig.id, None)
             self._signal_crosscheck_cache.pop(sig.id, None)
             return True

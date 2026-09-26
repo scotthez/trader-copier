@@ -22,6 +22,7 @@ class ProviderConfig(BaseModel):
     management_actions: list[str] = Field(default_factory=lambda: list(ALLOWED_ACTIONS))
     max_open_signals: int = 2
     max_legs_open: int = 8
+    min_margin_level_pct: float = 300.0     # no new entries while the account's margin level (equity / used margin) is below this (0 = off)
     daily_loss_stop_pct: float = 5.0                # stop new entries once the day is down this % of start-of-day equity (0 = off)
     ignore_patterns: list[str] = Field(default_factory=list)   # regexes; matching management messages are journaled, never classified
     expected_login: int = 0             # refuse to send anything unless state.json reports this login (0 = any)

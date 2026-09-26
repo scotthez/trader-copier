@@ -571,3 +571,24 @@ def test_rejected_typo_signal_message_carries_a_suggested_trade():
     assert "TPs out of order" in msg and "💡 Looks like a typo" in msg and "TP2 4260 → 4270" in msg and "4275 / 4270 / 4265" in msg
     ev = next(e for e in store.journal_tail() if e["kind"] == "signal_rejected")
     assert ev["detail"]["suggestion"]["tps"] == [4275.0, 4270.0, 4265.0]
+
+
+def test_margin_guard_blocks_new_entries_on_a_loaded_account():
+    tr, store, fb, _ = make(entries={ENTRY: _ex()})
+    tr.alerter = alerts = RecordingAlerter()
+    fb.account.equity, fb.account.margin_free = 800.0, 600.0          # 200 used → 400% → fine
+    assert "margin_level_low" not in tr.guard_reasons("wolves", fb.read_state())
+    fb.account.equity, fb.account.margin_free = 800.0, 100.0          # 700 used → 114% (other copiers)
+    inbox(store, ENTRY, 170); tr.tick()
+    assert store.get_run("wolves:170").state == RunState.REJECTED and fb.sent == []
+    msg = next(m for m in alerts.sent if "Not placed" in m)
+    assert "margin level below" in msg and "(margin level 114%)" in msg
+
+
+def test_margin_guard_ignores_an_empty_account_and_can_be_off():
+    tr, store, fb, _ = make(entries={ENTRY: _ex()})
+    fb.account.equity, fb.account.margin_free = 800.0, 800.0          # nothing open → no level at all
+    assert "margin_level_low" not in tr.guard_reasons("wolves", fb.read_state())
+    tr2, store2, fb2, _ = make(entries={ENTRY: _ex()}, min_margin_level_pct=0)
+    fb2.account.equity, fb2.account.margin_free = 800.0, 100.0
+    assert "margin_level_low" not in tr2.guard_reasons("wolves", fb2.read_state())

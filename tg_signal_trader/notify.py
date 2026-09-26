@@ -18,6 +18,7 @@ REASONS = {
     "max_open_signals": "already at max open signals",
     "max_legs_open": "already at max open legs",
     "daily_loss_stop": "daily loss stop reached",
+    "margin_level_low": "account margin level below min_margin_level_pct",
     "terminal_stale": "MT5 terminal not updating",
     "login_mismatch": "MT5 logged into the wrong account",
     "real_account_not_armed": "REAL account but live: false",
@@ -60,7 +61,8 @@ def event_line(kind: str, d: dict) -> str | None:
                      f"\n   {describe_signal(fixed)}\n   Check it against the channel before placing it yourself.")
         return line
     if kind == "guard_blocked":
-        return f"⛔ Not placed: {_reasons(d.get('reasons', []))}\n   {describe_signal(d['signal'])}"
+        level = f" (margin level {d['margin_level_pct']}%)" if "margin_level_low" in d.get("reasons", []) and d.get("margin_level_pct") else ""
+        return f"⛔ Not placed: {_reasons(d.get('reasons', []))}{level}\n   {describe_signal(d['signal'])}"
     if kind == "signal_deferred":
         return f"⏳ Signal waiting to be placed: {_reasons(d.get('reasons', []))}"
     if kind == "signal_unparsed":
