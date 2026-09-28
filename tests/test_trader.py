@@ -592,3 +592,12 @@ def test_margin_guard_ignores_an_empty_account_and_can_be_off():
     tr2, store2, fb2, _ = make(entries={ENTRY: _ex()}, min_margin_level_pct=0)
     fb2.account.equity, fb2.account.margin_free = 800.0, 100.0
     assert "margin_level_low" not in tr2.guard_reasons("wolves", fb2.read_state())
+
+
+def test_limit_too_far_message_shows_the_price_and_distance():
+    far = "BUY LIMIT XAUUSD @4300 4298\n\nSL 4290\nTP1 4305\nTP2 4310\nTP3 4315"   # price 4346.9 → 46.9 away = 1.08%
+    tr, store, fb, _ = make(entries={far: _ex(entry_type="LIMIT", entry_zone=[4300, 4298], sl=4290, tps=[4305, 4310, 4315])})
+    tr.alerter = alerts = RecordingAlerter()
+    inbox(store, far, 180); tr.tick()
+    msg = next(m for m in alerts.sent if "Not placed" in m)
+    assert "limit entry too far" in msg and "Price was 4346.9 (46.9 away from the entry, 1.08%)" in msg

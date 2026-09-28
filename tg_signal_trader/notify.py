@@ -56,6 +56,12 @@ def event_line(kind: str, d: dict) -> str | None:
         return f"✅ Placed: {describe_signal(d['signal'])} · {lots}"
     if kind == "signal_rejected":
         line = f"⛔ Not placed: {_reasons(d.get('reasons', []))}\n   {describe_signal(d['signal'])}"
+        sig, price = d["signal"], d.get("price")
+        if price:
+            line += f"\n   Price was {_fmt(price)}"
+            if sig.get("entry_zone"):
+                gap = abs(sig["entry_zone"][0] - price)
+                line += f" ({_fmt(round(gap, 2))} away from the entry, {gap / price * 100:.2f}%)"
         s = d.get("suggestion")
         if s:
             fixes = ", ".join(f"{k} {_fmt(w)} → {_fmt(g)}" for k, (w, g) in s["changed"].items())

@@ -361,7 +361,8 @@ class Trader:
         if fails:
             run.state = RunState.REJECTED
             self.store.save_run(run)
-            detail = {"reasons": fails, "signal": sig.model_dump(mode="json"), "crosscheck": crosscheck, "age_sec": self._age(sig)}
+            detail = {"reasons": fails, "signal": sig.model_dump(mode="json"), "crosscheck": crosscheck, "age_sec": self._age(sig),
+                      "price": round(quote.mid, 5) if quote else None}
             if "tp_not_monotonic" in fails:
                 from .suggest import suggest_tps
                 ref = sig.entry_zone[0] if sig.entry_zone else (quote.mid if quote else None)
