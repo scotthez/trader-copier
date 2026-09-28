@@ -36,7 +36,10 @@ def _reasons(codes: list[str]) -> str:
 
 
 def _fmt(x) -> str:
-    return f"{x:g}" if isinstance(x, (int, float)) else str(x)
+    """Prices as written: 4285, 4285.5, 0.8596, 4133100 (never 4.1331e+06)."""
+    if isinstance(x, (int, float)):
+        return f"{x:.6f}".rstrip("0").rstrip(".")
+    return str(x)
 
 
 def describe_signal(sig: dict) -> str:

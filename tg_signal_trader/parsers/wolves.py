@@ -34,6 +34,23 @@ def _numbered_tps(norm: str) -> list[float | None] | None:
     return result
 
 
+_GLUED = re.compile(r"(TP[1-4]:\s*)(\d+)(pips)", re.I)
+
+
+def _unglue_pips(norm: str, sl: float) -> str:
+    """Splits a TP price that runs straight into its pips note (live, 2026-09-28: "TP2 4133100pips" was
+    read as 4,133,100). Only when the number has more whole digits than the SL, split at the SL's digit
+    count, and only if what is left is a real pips figure."""
+    digits = len(str(int(sl)))
+
+    def fix(m: re.Match) -> str:
+        num = m.group(2)
+        if len(num) <= digits or int(num[digits:]) == 0 or num[digits] == "0":
+            return m.group(0)
+        return f"{m.group(1)}{num[:digits]} {num[digits:]}{m.group(3)}"
+    return _GLUED.sub(fix, norm)
+
+
 def _pips(norm: str) -> dict[int, int]:
     """TP number → the pips figure Wolves writes beside it ("TP1 4275 50pips")."""
     return {int(m.group(1)): int(m.group(3)) for m in _TPN.finditer(norm) if m.group(3)}
@@ -101,6 +118,7 @@ class WolvesParser:
         sl = _sl(norm)
         if sl is None:
             return ParseResult()
+        norm = _unglue_pips(norm, sl)
         m = _AT.search(norm)
         if m:
             tps = _numbered_tps(norm)

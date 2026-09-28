@@ -123,3 +123,20 @@ def test_open_tp4_is_synthesised_from_the_repaired_ladder():
     text = LIVE_29936.replace("TP3 4265 150pips ✅", "TP3 4265 150pips ✅\nTP4 Open")
     sig = _parse_text(text)
     assert sig.tps[:3] == [4275.0, 4270.0, 4265.0] and sig.tps[3] == 4260.0      # 4265 - (4270 - 4265)
+
+
+def test_tp_glued_to_its_pips_note_is_split():
+    # live 2026-09-28, Wolves #29986: "TP2 4133100pips" was read as 4,133,100 and the trade rejected
+    text = ("Gold 🏆\nPair: XAUUSD 📊\nSide: Short / Sell\nEntry: 4143 4145\nTP: Open\nSL: 4156\n\n"
+            "TP1 4138 50pips ✅\nTP2 4133100pips ✅\nTP3 4128 150pips ✅")
+    assert _parse_text(text).tps == [4138.0, 4133.0, 4128.0]
+    now = "XAUUSD SELL NOW 4143 - 4145\nSL: 4156\nTP1 4138 50pips\nTP2 4133100pips\nTP3 4128 150pips"
+    assert _parse_text(now).tps == [4138.0, 4133.0, 4128.0]
+
+
+def test_normal_tps_and_pips_are_left_alone():
+    from tg_signal_trader.parsers.wolves import _unglue_pips
+    s = "TP1: 4138 50pips\nTP2: 4133 100pips"
+    assert _unglue_pips(s, 4156.0) == s                                      # already spaced
+    assert _unglue_pips("TP1: 4138pips", 4156.0) == "TP1: 4138pips"         # no extra digits to split off
+    assert _unglue_pips("TP1: 41380pips", 4156.0) == "TP1: 41380pips"       # "0 pips" is not a pips note
