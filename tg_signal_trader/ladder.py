@@ -5,6 +5,7 @@ from .bridge import Bridge, BridgeState, Command, CommandResult, fmt_ts
 from .config import ProviderConfig
 from .models import Leg, LegState, RunState, Side, EntryType, SignalRun
 from .sizing import leg_volume, sl_improves, sl_valid_vs_market
+from .validation import Quote
 
 MISSING_GRACE_SEC = 30      # position absent from state without a deal → CLOSED_MANUAL after this
 
@@ -51,12 +52,22 @@ def place_run(run: SignalRun, cfg: ProviderConfig, state: BridgeState, bridge: B
     broker_symbol = cfg.symbols[sig.symbol]
     spec = state.symbols[broker_symbol]
     is_buy = sig.side == Side.BUY
-    if sig.entry_type == EntryType.LIMIT:
-        entry_ref = sig.entry_zone[0]
-    else:
-        entry_ref = spec.ask if is_buy else spec.bid
+    market = spec.ask if is_buy else spec.bid
     events: list[dict] = []
-    expires = fmt_ts(_local_naive(sig.received_at) + timedelta(hours=cfg.pending_ttl_hours)) if sig.entry_type == EntryType.LIMIT else None
+    # A limit the market has already passed is an invalid pending price at the broker (live, Wolves
+    # 2026-10-09: #30375 Buy Limit 4188 rejected with 10015). The market is then at the entry or
+    # better, so take it there, unless it has run past the SL too.
+    at_market = sig.entry_type == EntryType.MARKET or (market <= sig.entry_zone[0] if is_buy else market >= sig.entry_zone[0])
+    if sig.entry_type == EntryType.LIMIT and at_market:
+        if not sl_valid_vs_market(sig.side, sig.sl, Quote(bid=spec.bid, ask=spec.ask)):
+            for leg in run.legs:
+                leg.state, leg.reason = LegState.CANCELLED, f"limit {sig.entry_zone[0]:g} passed and price {market:g} is past the SL"
+                events.append(_ev("leg_cancelled", run, leg=leg.n, reason=leg.reason))
+            _recompute_state(run)
+            return events
+        events.append(_ev("limit_taken_at_market", run, limit=sig.entry_zone[0], price=market))
+    entry_ref = market if at_market else sig.entry_zone[0]
+    expires = None if at_market else fmt_ts(_local_naive(sig.received_at) + timedelta(hours=cfg.pending_ttl_hours))
     for leg in run.legs:
         try:
             floor = cfg.min_volume.get(sig.symbol, 0.0)
@@ -70,7 +81,7 @@ def place_run(run: SignalRun, cfg: ProviderConfig, state: BridgeState, bridge: B
             events.append(_ev("leg_cancelled", run, leg=leg.n, reason=leg.reason))
             continue
         comment = leg.comment(sig.id)
-        if sig.entry_type == EntryType.MARKET:
+        if at_market:
             events.append(_send(run, leg, bridge, "open_market", symbol=broker_symbol, side=sig.side.value, volume=leg.volume,
                                 sl=sig.sl, tp=leg.tp, comment=comment))
         else:

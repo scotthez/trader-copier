@@ -79,6 +79,8 @@ def event_line(kind: str, d: dict) -> str | None:
     if kind == "tp_corrected":
         fixes = ", ".join(f"{k} {_fmt(v)} → {_fmt(d['used'][k])}" for k, v in d.get("as_written", {}).items())
         return f"✏️ Fixed a TP typo from its pips note: {fixes}"
+    if kind == "limit_taken_at_market":
+        return f"↘️ Price already past the limit {_fmt(d['limit'])}: placing at market ({_fmt(d['price'])})"
     if kind == "leg_filled":
         return f"▶️ Leg {d['leg']} filled @ {_fmt(d['price'])}"
     if kind == "leg_closed":

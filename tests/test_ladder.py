@@ -199,3 +199,42 @@ def test_second_cancel_message_does_not_resend_an_inflight_cancel():
     assert len(first) == 3 and second == []
     pump(run, fb)
     assert all(l.state == LegState.CANCELLED and l.reason == "cancelled by command" for l in run.legs)
+
+
+def test_limit_already_through_market_is_placed_at_market():
+    # Live, 2026-10-09 (#30375): Buy Limit 4188 sent as a pending order with price already below it;
+    # the broker rejected it as "invalid price" (10015). Price is better than the entry: take it at market.
+    fb = bridge()                                   # bid 4346.8 / ask 4347.0
+    run = mk(entry_type=EntryType.LIMIT, zone=[4348.0], sl=4341.0, mid=3)
+    ev = place_run(run, CFG, fb.read_state(), fb, fb.now)
+    assert len(fb.sent) == 4 and all(c.type == "open_market" and c.price is None and c.sl == 4341.0 for c in fb.sent)
+    assert [e for e in ev if e["kind"] == "limit_taken_at_market"] == [{"kind": "limit_taken_at_market", "run_id": "wolves:3", "limit": 4348.0, "price": 4347.0}]
+    pump(run, fb)
+    assert [l.state for l in run.legs] == [LegState.OPEN] * 4
+
+
+def test_sell_limit_through_market_is_placed_at_market():
+    fb = bridge()
+    run = mk(side=Side.SELL, entry_type=EntryType.LIMIT, zone=[4346.0, 4344.0], sl=4355.0, tps=(4340.0, 4335.0, 4330.0, 4325.0), mid=4)
+    place_run(run, CFG, fb.read_state(), fb, fb.now)
+    assert all(c.type == "open_market" for c in fb.sent)
+
+
+def test_limit_through_market_past_the_sl_is_not_placed():
+    fb = bridge()
+    run = mk(entry_type=EntryType.LIMIT, zone=[4355.0], sl=4348.0, tps=(4360.0, 4365.0, 4370.0, 4375.0), mid=5)
+    ev = place_run(run, CFG, fb.read_state(), fb, fb.now)
+    assert fb.sent == [] and all(l.state == LegState.CANCELLED and "past the SL" in l.reason for l in run.legs)
+    assert any(e["kind"] == "leg_cancelled" for e in ev)
+
+
+def test_limit_below_market_is_still_a_pending_order():
+    fb = bridge()
+    run = mk(entry_type=EntryType.LIMIT, zone=[4346.0], sl=4341.0, mid=6)
+    place_run(run, CFG, fb.read_state(), fb, fb.now)
+    assert all(c.type == "open_pending" and c.price == 4346.0 for c in fb.sent)
+
+
+def test_limit_taken_at_market_has_an_alert_line():
+    from tg_signal_trader.notify import event_line
+    assert event_line("limit_taken_at_market", {"limit": 4188.0, "price": 4186.5}) == "↘️ Price already past the limit 4188: placing at market (4186.5)"
