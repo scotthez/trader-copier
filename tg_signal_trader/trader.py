@@ -199,7 +199,7 @@ class Trader:
             prev = self.store.recent_inbox(provider, msg.msg_id, 3)
             result = parser.parse(msg, prev)
             sig = result.signal
-            if sig is None and not result.final and looks_like_entry(msg.text):
+            if sig is None and looks_like_entry(msg.text):
                 sig = self._llm_entry(msg, provider)
             if sig is not None:
                 if sig.tp_corrections and sig.id not in self._tp_corrected_logged:

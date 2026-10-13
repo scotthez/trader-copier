@@ -18,6 +18,11 @@ class Side(str, Enum):
 class EntryType(str, Enum):
     MARKET = "MARKET"
     LIMIT = "LIMIT"
+    STOP = "STOP"     # Buy Stop above / Sell Stop below the market: enters on the breakout
+
+    @property
+    def pending(self) -> bool:
+        return self in (EntryType.LIMIT, EntryType.STOP)
 
 
 class LegState(str, Enum):

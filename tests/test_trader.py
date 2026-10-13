@@ -603,12 +603,20 @@ def test_limit_too_far_message_shows_the_price_and_distance():
     assert "limit entry too far" in msg and "Price was 4346.9 (46.9 away from the entry, 1.08%)" in msg
 
 
-def test_final_parser_rejection_skips_llm_fallback():
-    text = ("Gold 🏆\nPair: XAUUSD 📊\nSide: Short / Sell Stop\nEntry: 4186\nTP: Open\nSL: 4198\n"
-            "TP1 4181 50pips ✅\nTP2 4176 100pips ✅\nTP3 4171 150pips ✅")
-    ex = EntryExtraction(symbol="XAUUSD", side="SELL", entry_type="MARKET", entry_zone=[], sl=4198, tps=[4181, 4176, 4171, None], confidence=0.99)
-    tr, store, fb, _ = make(entries={text: ex})
-    inbox(store, text, 80); tr.tick(); tr.tick()
-    assert store.get_run("wolves:80") is None and fb.sent == []
-    unparsed = [e for e in store.journal_tail() if e["kind"] == "signal_unparsed"]
-    assert len(unparsed) == 1 and "Sell Stop" in unparsed[0]["detail"]["reason"]
+STOP_ENTRY = ("Gold 🏆\nPair: XAUUSD 📊\nSide: Short / Sell Stop\nEntry: 4344\nTP: Open\nSL: 4350\n"
+              "TP1 4339 50pips ✅\nTP2 4334 100pips ✅\nTP3 4329 150pips ✅")
+
+
+def test_stop_entry_is_placed_as_a_stop_order():
+    ex = _ex(side="SELL", entry_type="STOP", entry_zone=[4344], sl=4350, tps=[None, 4339, 4334, 4329])
+    tr, store, fb, _ = make(entries={STOP_ENTRY: ex})
+    inbox(store, STOP_ENTRY, 80); tr.tick()
+    assert len(fb.sent) == 3 and all(c.type == "open_pending" and c.order_kind == "STOP" and c.price == 4344 for c in fb.sent)
+    tr.tick()
+    assert store.get_run("wolves:80").state == RunState.ACTIVE and {o.type for o in fb.orders} == {"SELL_STOP"}
+
+
+def test_stop_entry_the_model_reads_as_market_is_rejected():
+    tr, store, fb, _ = make(entries={STOP_ENTRY: _ex(side="SELL", entry_type="MARKET", sl=4350, tps=[4339, 4334, 4329, None])})
+    inbox(store, STOP_ENTRY, 81); tr.tick()
+    assert fb.sent == [] and "crosscheck:entry_type" in next(e for e in store.journal_tail() if e["kind"] == "signal_rejected")["detail"]["reasons"]

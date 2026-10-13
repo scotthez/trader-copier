@@ -93,11 +93,11 @@ def _plain_tps(norm: str) -> list[float | None] | None:
     return vals[:3] + ([vals[3]] if len(vals) > 3 else [])
 
 
-def _stop_rejected(template: str, side: str) -> ParseResult:
-    """Buy/Sell Stop orders aren't supported by the bridge. Final, so the LLM fallback can't turn one
-    into a market order (live, 2026-10-13: #30415 "Sell Stop 4186" was read as a market SELL at 4192)."""
-    return ParseResult(template=template, final=True,
-                       rejected_reason=f"{side.capitalize()} Stop orders aren't supported - place it manually if wanted")
+def _entry_type(suffix: str | None) -> EntryType:
+    """"Limit" / "Stop" after the side; none is a market order. A stop was once read as a market order
+    (live, 2026-10-13: #30415 "Sell Stop 4186" would have sold at 4192 straight away)."""
+    word = (suffix or "").strip().upper()
+    return EntryType.STOP if word == "STOP" else EntryType.LIMIT if word == "LIMIT" else EntryType.MARKET
 
 
 def _build(msg: InboxMessage, template: str, symbol: str, side: str, entry_type: EntryType,
@@ -132,11 +132,8 @@ class WolvesParser:
             if tps is None:
                 return ParseResult(template="wolves.at", rejected_reason="TP1..TP3 missing")
             zone = [parse_price(m.group(4))] + ([parse_price(m.group(5))] if m.group(5) else [])
-            if m.group(2) and m.group(2).strip().upper() == "STOP":
-                return _stop_rejected("wolves.at", m.group(1))
-            limit = bool(m.group(2))
-            return _build(msg, "wolves.at", m.group(3), m.group(1), EntryType.LIMIT if limit else EntryType.MARKET,
-                          zone if limit else [], sl, tps, _pips(norm))
+            et = _entry_type(m.group(2))
+            return _build(msg, "wolves.at", m.group(3), m.group(1), et, zone if et.pending else [], sl, tps, _pips(norm))
         pair, side = _PAIR.search(norm), _SIDE.search(norm)
         if pair and side:
             tps = _numbered_tps(norm)
@@ -144,11 +141,8 @@ class WolvesParser:
                 return ParseResult(template="wolves.block", rejected_reason="TP1..TP3 missing")
             e = _ENTRY.search(norm)
             zone = ([parse_price(e.group(1))] + ([parse_price(e.group(2))] if e.group(2) else [])) if e else []
-            if side.group(2) and side.group(2).strip().upper() == "STOP":
-                return _stop_rejected("wolves.block", side.group(1))
-            limit = bool(side.group(2))
-            return _build(msg, "wolves.block", pair.group(1), side.group(1), EntryType.LIMIT if limit else EntryType.MARKET,
-                          zone if limit else [], sl, tps, _pips(norm))
+            et = _entry_type(side.group(2))
+            return _build(msg, "wolves.block", pair.group(1), side.group(1), et, zone if et.pending else [], sl, tps, _pips(norm))
         m = _NOW.search(norm)
         if m:
             tps = _plain_tps(norm) or _numbered_tps(norm)

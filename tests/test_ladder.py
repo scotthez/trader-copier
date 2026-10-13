@@ -208,7 +208,7 @@ def test_limit_already_through_market_is_placed_at_market():
     run = mk(entry_type=EntryType.LIMIT, zone=[4348.0], sl=4341.0, mid=3)
     ev = place_run(run, CFG, fb.read_state(), fb, fb.now)
     assert len(fb.sent) == 4 and all(c.type == "open_market" and c.price is None and c.sl == 4341.0 for c in fb.sent)
-    assert [e for e in ev if e["kind"] == "limit_taken_at_market"] == [{"kind": "limit_taken_at_market", "run_id": "wolves:3", "limit": 4348.0, "price": 4347.0}]
+    assert [e for e in ev if e["kind"] == "entry_taken_at_market"] == [{"kind": "entry_taken_at_market", "run_id": "wolves:3", "order": "limit", "entry": 4348.0, "price": 4347.0}]
     pump(run, fb)
     assert [l.state for l in run.legs] == [LegState.OPEN] * 4
 
@@ -235,6 +235,40 @@ def test_limit_below_market_is_still_a_pending_order():
     assert all(c.type == "open_pending" and c.price == 4346.0 for c in fb.sent)
 
 
-def test_limit_taken_at_market_has_an_alert_line():
-    from tg_signal_trader.notify import event_line
-    assert event_line("limit_taken_at_market", {"limit": 4188.0, "price": 4186.5}) == "↘️ Price already past the limit 4188: placing at market (4186.5)"
+def test_stop_waits_as_a_stop_order():
+    fb = bridge()                                   # bid 4346.8 / ask 4347.0
+    run = mk(side=Side.SELL, entry_type=EntryType.STOP, zone=[4344.0], sl=4350.0, tps=(4339.0, 4334.0, 4329.0, 4324.0), mid=7)
+    place_run(run, CFG, fb.read_state(), fb, fb.now)
+    assert all(c.type == "open_pending" and c.order_kind == "STOP" and c.price == 4344.0 and c.expires_at for c in fb.sent)
+    pump(run, fb)
+    assert [l.state for l in run.legs] == [LegState.PENDING_ORDER] * 4 and fb.orders[0].type == "SELL_STOP"
+    fb.fill_pending(run.legs[0].order_ticket); pump(run, fb)
+    assert run.legs[0].state == LegState.OPEN and run.legs[0].entry_price == 4344.0
+
+
+def test_limit_commands_carry_no_order_kind():
+    fb = bridge()
+    place_run(mk(entry_type=EntryType.LIMIT, zone=[4346.0], sl=4341.0, mid=8), CFG, fb.read_state(), fb, fb.now)
+    assert all(c.order_kind is None and "order_kind" not in c.to_line() for c in fb.sent)
+
+
+def test_triggered_stop_is_placed_at_market():
+    fb = bridge()
+    run = mk(entry_type=EntryType.STOP, zone=[4346.5], sl=4341.0, mid=9)      # buy stop below the ask: already triggered
+    ev = place_run(run, CFG, fb.read_state(), fb, fb.now)
+    assert all(c.type == "open_market" for c in fb.sent)
+    assert any(e["kind"] == "entry_taken_at_market" and e["order"] == "stop" for e in ev)
+
+
+def test_sell_stop_triggered_past_the_sl_is_not_placed():
+    fb = bridge()
+    run = mk(side=Side.SELL, entry_type=EntryType.STOP, zone=[4350.0], sl=4346.0, tps=(4345.0, 4340.0, 4335.0, 4330.0), mid=10)
+    place_run(run, CFG, fb.read_state(), fb, fb.now)
+    assert fb.sent == [] and all(l.state == LegState.CANCELLED and "stop 4350 passed" in l.reason for l in run.legs)
+
+
+def test_entry_taken_at_market_has_an_alert_line():
+    from tg_signal_trader.notify import event_line, describe_signal
+    assert event_line("entry_taken_at_market", {"order": "stop", "entry": 4186.0, "price": 4185.5}) == "↘️ Price already past the stop 4186: placing at market (4185.5)"
+    sig = {"side": "SELL", "entry_type": "STOP", "symbol": "XAUUSD", "entry_zone": [4186.0], "sl": 4198.0, "tps": [4181.0, 4176.0, 4171.0]}
+    assert describe_signal(sig) == "SELL STOP XAUUSD @ 4186 · SL 4198 · TP 4181 / 4176 / 4171"

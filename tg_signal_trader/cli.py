@@ -101,8 +101,8 @@ def classify_eval(classifier: Classifier, provider: str, export_dir: Path, n: in
         ctx = None
         if quoted is not None:
             sig = parser.parse(quoted, []).signal
-            if sig is not None:   # assume the quoted setup is live: pending if it was a limit, open otherwise
-                limit = sig.entry_type.value == "LIMIT"
+            if sig is not None:   # assume the quoted setup is live: pending if it was a limit or stop, open otherwise
+                limit = sig.entry_type.pending
                 ctx = RunContext(symbol=sig.symbol, side=sig.side.value, entry_type=sig.entry_type.value, entry_zone=sig.entry_zone,
                                  sl=sig.sl, open_legs=0 if limit else 4, pending_legs=4 if limit else 0, sl_current=sig.sl)
         c = classifier.classify_management(m.text, provider, ctx, [], reply_text=quoted.text[:600] if quoted else None)

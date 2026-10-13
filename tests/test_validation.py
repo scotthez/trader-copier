@@ -48,3 +48,19 @@ def test_stale_and_distance():
 def test_unmapped_symbol_and_no_quote():
     assert "symbol_unmapped" in validate_signal(sig(symbol="NAS100"), CFG, Q, NOW)
     assert "no_quote" in validate_signal(sig(), CFG, None, NOW)
+
+
+def test_stop_entries():
+    # Q: bid 4372.0 / ask 4372.4
+    waiting = sig(entry_type=EntryType.STOP, entry_zone=[4366], sl=4378, tps=[4361, 4356, 4351, 4346])
+    assert validate_signal(waiting, CFG, Q, NOW) == []
+    far = sig(entry_type=EntryType.STOP, entry_zone=[4300], sl=4312, tps=[4295, 4290, 4285, 4280])
+    assert validate_signal(far, CFG, Q, NOW) == ["stop_too_far"]
+    triggered = sig(entry_type=EntryType.STOP, entry_zone=[4374], sl=4386, tps=[4369, 4364, 4359, 4354])
+    assert validate_signal(triggered, CFG, Q, NOW) == []
+    past_tp1 = sig(entry_type=EntryType.STOP, entry_zone=[4380], sl=4392, tps=[4373, 4368, 4363, 4358])
+    assert validate_signal(past_tp1, CFG, Q, NOW) == ["tp_wrong_side"]
+    ran_away = sig(entry_type=EntryType.STOP, entry_zone=[4390], sl=4402, tps=[4385, 4380, 4375, 4370])
+    assert "market_too_far" in validate_signal(ran_away, CFG, Q, NOW)
+    buy_waiting = sig(side=Side.BUY, entry_type=EntryType.STOP, entry_zone=[4378], sl=4366, tps=[4383, 4388, 4393, 4398])
+    assert validate_signal(buy_waiting, CFG, Q, NOW) == []

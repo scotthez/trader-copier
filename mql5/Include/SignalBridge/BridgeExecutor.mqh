@@ -9,6 +9,7 @@ struct BridgeCommand
    string cmd_id; string type; string symbol; string side;
    double volume; double sl; double tp; string comment; double price; datetime expires_at;
    ulong position; ulong order;
+   string order_kind;   // open_pending: "LIMIT" (default) or "STOP"
 };
 
 struct BridgeResult
@@ -20,7 +21,7 @@ struct BridgeResult
 bool ParseCommand(const string json, BridgeCommand &c)
 {
    c.cmd_id = ""; c.type = ""; c.symbol = ""; c.side = ""; c.volume = 0; c.sl = 0; c.tp = 0; c.comment = "";
-   c.price = 0; c.expires_at = 0; c.position = 0; c.order = 0;
+   c.price = 0; c.expires_at = 0; c.position = 0; c.order = 0; c.order_kind = "LIMIT";
    if(!JsonGetString(json, "cmd_id", c.cmd_id) || c.cmd_id == "") return false;
    if(!JsonGetString(json, "type", c.type)) return false;
    if(c.type != "ping" && c.type != "open_market" && c.type != "open_pending" && c.type != "modify_sl" && c.type != "close" && c.type != "cancel") return false;
@@ -28,6 +29,7 @@ bool ParseCommand(const string json, BridgeCommand &c)
    if(JsonGetString(json, "symbol", s)) c.symbol = s;
    if(JsonGetString(json, "side", s)) c.side = s;
    if(JsonGetString(json, "comment", s)) c.comment = s;
+   if(JsonGetString(json, "order_kind", s)) c.order_kind = s;
    if(JsonGetDouble(json, "volume", d)) c.volume = d;
    if(JsonGetDouble(json, "sl", d)) c.sl = d;
    if(JsonGetDouble(json, "tp", d)) c.tp = d;
@@ -107,12 +109,16 @@ private:
    bool TryOpenPending(const BridgeCommand &c)
    {
       if(c.side != "BUY" && c.side != "SELL") { m_precond_fail = "invalid side '" + c.side + "'"; return false; }
+      if(c.order_kind != "LIMIT" && c.order_kind != "STOP") { m_precond_fail = "invalid order_kind '" + c.order_kind + "'"; return false; }
       if(!SymbolSelect(c.symbol, true)) { m_precond_fail = "symbol '" + c.symbol + "' not found"; return false; }
       m_trade.SetTypeFillingBySymbol(c.symbol);
       ENUM_ORDER_TYPE_TIME tt = (c.expires_at > 0) ? ORDER_TIME_SPECIFIED : ORDER_TIME_GTC;
       double px = NormalizeStop(c.symbol, c.price), sl = NormalizeStop(c.symbol, c.sl), tp = NormalizeStop(c.symbol, c.tp);
-      if(c.side == "BUY") m_trade.BuyLimit(c.volume, px, c.symbol, sl, tp, tt, c.expires_at, c.comment);
-      else                m_trade.SellLimit(c.volume, px, c.symbol, sl, tp, tt, c.expires_at, c.comment);
+      bool stop = (c.order_kind == "STOP");
+      if(c.side == "BUY") { if(stop) m_trade.BuyStop(c.volume, px, c.symbol, sl, tp, tt, c.expires_at, c.comment);
+                            else     m_trade.BuyLimit(c.volume, px, c.symbol, sl, tp, tt, c.expires_at, c.comment); }
+      else                { if(stop) m_trade.SellStop(c.volume, px, c.symbol, sl, tp, tt, c.expires_at, c.comment);
+                            else     m_trade.SellLimit(c.volume, px, c.symbol, sl, tp, tt, c.expires_at, c.comment); }
       return Accepted();
    }
    bool TryModifySl(const BridgeCommand &c)

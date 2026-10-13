@@ -54,18 +54,25 @@ def place_run(run: SignalRun, cfg: ProviderConfig, state: BridgeState, bridge: B
     is_buy = sig.side == Side.BUY
     market = spec.ask if is_buy else spec.bid
     events: list[dict] = []
-    # A limit the market has already passed is an invalid pending price at the broker (live, Wolves
-    # 2026-10-09: #30375 Buy Limit 4188 rejected with 10015). The market is then at the entry or
-    # better, so take it there, unless it has run past the SL too.
-    at_market = sig.entry_type == EntryType.MARKET or (market <= sig.entry_zone[0] if is_buy else market >= sig.entry_zone[0])
-    if sig.entry_type == EntryType.LIMIT and at_market:
-        if not sl_valid_vs_market(sig.side, sig.sl, Quote(bid=spec.bid, ask=spec.ask)):
-            for leg in run.legs:
-                leg.state, leg.reason = LegState.CANCELLED, f"limit {sig.entry_zone[0]:g} passed and price {market:g} is past the SL"
-                events.append(_ev("leg_cancelled", run, leg=leg.n, reason=leg.reason))
-            _recompute_state(run)
-            return events
-        events.append(_ev("limit_taken_at_market", run, limit=sig.entry_zone[0], price=market))
+    # A pending entry the market has already reached is an invalid pending price at the broker (live,
+    # Wolves 2026-10-09: #30375 Buy Limit 4188 rejected with 10015). A passed limit is then at the entry
+    # or better, a passed stop has triggered (validation keeps it near the entry): take either at
+    # market, unless price has run past the SL too.
+    kind = sig.entry_type.value.lower()
+    if sig.entry_type == EntryType.MARKET:
+        at_market = True
+    else:
+        entry = sig.entry_zone[0]
+        reached_from_above = is_buy == (sig.entry_type == EntryType.LIMIT)   # buy limit, sell stop
+        at_market = market <= entry if reached_from_above else market >= entry
+        if at_market:
+            if not sl_valid_vs_market(sig.side, sig.sl, Quote(bid=spec.bid, ask=spec.ask)):
+                for leg in run.legs:
+                    leg.state, leg.reason = LegState.CANCELLED, f"{kind} {sig.entry_zone[0]:g} passed and price {market:g} is past the SL"
+                    events.append(_ev("leg_cancelled", run, leg=leg.n, reason=leg.reason))
+                _recompute_state(run)
+                return events
+            events.append(_ev("entry_taken_at_market", run, order=kind, entry=sig.entry_zone[0], price=market))
     entry_ref = market if at_market else sig.entry_zone[0]
     expires = None if at_market else fmt_ts(_local_naive(sig.received_at) + timedelta(hours=cfg.pending_ttl_hours))
     for leg in run.legs:
@@ -86,7 +93,8 @@ def place_run(run: SignalRun, cfg: ProviderConfig, state: BridgeState, bridge: B
                                 sl=sig.sl, tp=leg.tp, comment=comment))
         else:
             events.append(_send(run, leg, bridge, "open_pending", symbol=broker_symbol, side=sig.side.value, volume=leg.volume,
-                                price=entry_ref, sl=sig.sl, tp=leg.tp, comment=comment, expires_at=expires))
+                                price=entry_ref, sl=sig.sl, tp=leg.tp, comment=comment, expires_at=expires,
+                                order_kind="STOP" if sig.entry_type == EntryType.STOP else None))
     run.state = RunState.PLACING
     if not run.placing_legs():
         _recompute_state(run)
@@ -192,7 +200,7 @@ def _ladder(run: SignalRun, bridge: Bridge) -> list[dict]:
 
 
 def _expiry_backstop(run: SignalRun, cfg: ProviderConfig, bridge: Bridge, now_local: datetime) -> list[dict]:
-    if run.signal.entry_type != EntryType.LIMIT:
+    if not run.signal.entry_type.pending:
         return []
     deadline = _local_naive(run.signal.received_at) + timedelta(hours=cfg.pending_ttl_hours, minutes=1)
     if now_local < deadline:

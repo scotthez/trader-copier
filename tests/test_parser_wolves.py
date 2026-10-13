@@ -147,25 +147,27 @@ LIVE_30415 = ("Gold 🏆\nPair: XAUUSD 📊\nSide: Short / Sell Stop\nEntry: 418
               "TP1 4181 50pips ✅\nTP2 4176 100pips ✅\nTP3 4171 150pips ✅\n\nUse Proper Risk Management")
 
 
-def test_block_sell_stop_is_rejected_not_traded_at_market():
+def test_block_sell_stop_is_a_stop_entry():
     # Live, 2026-10-13: "Sell Stop" was read as a market SELL at 4192 instead of waiting for 4186.
-    r = get_parser("wolves").parse(msg(LIVE_30415, 30415), [])
-    assert r.signal is None and r.final and r.template == "wolves.block" and "Sell Stop" in r.rejected_reason
+    s = get_parser("wolves").parse(msg(LIVE_30415, 30415), []).signal
+    assert s.side == Side.SELL and s.entry_type == EntryType.STOP and s.entry_zone == [4186.0]
+    assert s.sl == 4198 and s.tps == [4181, 4176, 4171]
 
 
-def test_block_buy_stop_is_rejected():
-    text = LIVE_30415.replace("Short / Sell Stop", "Long / Buy Stop").replace("SL: 4198", "SL: 4174")
-    r = get_parser("wolves").parse(msg(text), [])
-    assert r.signal is None and r.final and "Buy Stop" in r.rejected_reason
+def test_block_buy_stop_lowercase_is_a_stop_entry():
+    text = LIVE_30415.replace("Short / Sell Stop", "Long / Buy stop").replace("SL: 4198", "SL: 4174") \
+        .replace("TP1 4181", "TP1 4191").replace("TP2 4176", "TP2 4196").replace("TP3 4171", "TP3 4201")
+    s = get_parser("wolves").parse(msg(text), []).signal
+    assert s.side == Side.BUY and s.entry_type == EntryType.STOP and s.entry_zone == [4186.0]
 
 
-def test_at_template_stop_is_rejected():
-    r = get_parser("wolves").parse(msg("SELL STOP XAUUSD @4186\n\nSL 4198\nTP1 4181\nTP2 4176\nTP3 4171\nTP4 Open"), [])
-    assert r.signal is None and r.final and r.template == "wolves.at" and "Sell Stop" in r.rejected_reason
+def test_at_template_stop_is_a_stop_entry():
+    s = get_parser("wolves").parse(msg("SELL STOP XAUUSD @4186\n\nSL 4198\nTP1 4181\nTP2 4176\nTP3 4171\nTP4 Open"), []).signal
+    assert s.entry_type == EntryType.STOP and s.entry_zone == [4186.0]
 
 
 def test_block_limit_and_market_still_parse():
     limit = get_parser("wolves").parse(msg(LIVE_30415.replace("Sell Stop", "Sell Limit").replace("Entry: 4186", "Entry: 4186 4189")), []).signal
     assert limit.entry_type == EntryType.LIMIT and limit.entry_zone == [4186.0, 4189.0]
-    market = get_parser("wolves").parse(msg(LIVE_30415.replace("Short / Sell Stop", "Short / Sell")), [])
-    assert market.signal.entry_type == EntryType.MARKET and not market.final
+    market = get_parser("wolves").parse(msg(LIVE_30415.replace("Short / Sell Stop", "Short / Sell")), []).signal
+    assert market.entry_type == EntryType.MARKET and market.entry_zone == []

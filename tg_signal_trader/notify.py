@@ -14,6 +14,7 @@ REASONS = {
     "tp_not_monotonic": "TPs out of order",
     "market_too_far": "price moved too far from the signal's entry",
     "limit_too_far": "limit entry too far from current price",
+    "stop_too_far": "stop entry too far from current price",
     "trade_not_allowed": "broker has trading disabled for this symbol",
     "max_open_signals": "already at max open signals",
     "max_legs_open": "already at max open legs",
@@ -44,7 +45,7 @@ def _fmt(x) -> str:
 
 def describe_signal(sig: dict) -> str:
     """'SELL LIMIT XAUUSD @ 4285 · SL 4302 · TP 4280 / 4275 / 4270'"""
-    entry = f"LIMIT {sig['symbol']} @ {_fmt(sig['entry_zone'][0])}" if sig["entry_type"] == "LIMIT" else f"{sig['symbol']} at market"
+    entry = f"{sig['entry_type']} {sig['symbol']} @ {_fmt(sig['entry_zone'][0])}" if sig["entry_type"] in ("LIMIT", "STOP") else f"{sig['symbol']} at market"
     return f"{sig['side']} {entry} · SL {_fmt(sig['sl'])} · TP {' / '.join(_fmt(t) for t in sig['tps'])}"
 
 
@@ -79,8 +80,8 @@ def event_line(kind: str, d: dict) -> str | None:
     if kind == "tp_corrected":
         fixes = ", ".join(f"{k} {_fmt(v)} → {_fmt(d['used'][k])}" for k, v in d.get("as_written", {}).items())
         return f"✏️ Fixed a TP typo from its pips note: {fixes}"
-    if kind == "limit_taken_at_market":
-        return f"↘️ Price already past the limit {_fmt(d['limit'])}: placing at market ({_fmt(d['price'])})"
+    if kind == "entry_taken_at_market":
+        return f"↘️ Price already past the {d['order']} {_fmt(d['entry'])}: placing at market ({_fmt(d['price'])})"
     if kind == "leg_filled":
         return f"▶️ Leg {d['leg']} filled @ {_fmt(d['price'])}"
     if kind == "leg_closed":
@@ -131,7 +132,7 @@ class TradeNotifier:
             self._headers[key] = self._header(provider, s["symbol"], s["side"], s["entry_type"], s["telegram_msg_id"])
 
     def _header(self, provider: str, symbol: str, side: str, entry_type: str, msg_id) -> str:
-        kind = " LIMIT" if entry_type == "LIMIT" else ""
+        kind = f" {entry_type}" if entry_type in ("LIMIT", "STOP") else ""
         return f"[{provider}] {symbol} {side}{kind} (msg #{msg_id})"
 
     def flush(self) -> None:

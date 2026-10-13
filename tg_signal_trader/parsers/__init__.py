@@ -11,7 +11,6 @@ class ParseResult(BaseModel):
     signal: Signal | None = None
     template: str | None = None
     rejected_reason: str | None = None
-    final: bool = False   # the rejection is deliberate: don't hand the message to the LLM fallback
 
 
 class Parser(Protocol):

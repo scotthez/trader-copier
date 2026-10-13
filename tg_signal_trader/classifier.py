@@ -17,7 +17,7 @@ class Classification(BaseModel):
 class EntryExtraction(BaseModel):
     symbol: str
     side: Literal["BUY", "SELL"]
-    entry_type: Literal["MARKET", "LIMIT"]
+    entry_type: Literal["MARKET", "LIMIT", "STOP"]
     entry_zone: list[float] = Field(default_factory=list)
     sl: float
     tps: list[float | None]
@@ -40,13 +40,14 @@ Actions:
 - move_sl: move the stop loss to an explicit price the message states (put it in "price").
 - break_even: move the stop loss to the entry price ("BE", "break even", "risk free", "SL to entry").
 Typos and slang are common ("delte", "im be now", "sl 4412 guys"). "TP hit", "running +40 pips", "secure some profits" are NOT actions → "none".
-When the message is a reply, the quoted message tells you which trade it is about: "delete this" quoting a limit/pending
+When the message is a reply, the quoted message tells you which trade it is about: "delete this" quoting a limit/stop/pending
 setup means cancel_pending; quoting a market entry or an active trade means close_all.
 confidence is your probability that the action is what the provider means for THIS trade."""
 
 ENTRY_SYSTEM = """Extract a trade signal from a Telegram message if, and only if, it clearly states a direction, a symbol,
 a stop loss and at least three take-profit levels. Use MARKET unless the message says limit/zone/pending, in which case
-entry_type is LIMIT and entry_zone holds the stated price(s). tps must list TP1..TP4 in order, using null for an "open" TP.
+entry_type is LIMIT and entry_zone holds the stated price(s); a "buy stop" / "sell stop" entry is STOP, with entry_zone
+holding the stated price(s). tps must list TP1..TP4 in order, using null for an "open" TP.
 If any of side, symbol, sl or three TPs is missing, set confidence to 0."""
 
 

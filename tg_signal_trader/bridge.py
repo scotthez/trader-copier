@@ -87,6 +87,7 @@ class Command(BaseModel):
     sl: float | None = None; tp: float | None = None; comment: str | None = None
     price: float | None = None; expires_at: str | None = None
     position: int | None = None; order: int | None = None
+    order_kind: str | None = None       # open_pending: "STOP" for a stop order; absent = limit
 
     def to_line(self) -> str:
         return json.dumps(self.model_dump(exclude_none=True), separators=(",", ":"))
@@ -249,7 +250,7 @@ class FakeBridge:
                 r.position = t; r.order = t; r.fill_price = px
         elif cmd.type == "open_pending":
             t = self._next_ticket()
-            self.orders.append(Order(ticket=t, symbol=cmd.symbol, type=f"{cmd.side}_LIMIT", volume=cmd.volume, price=cmd.price, sl=cmd.sl or 0, tp=cmd.tp or 0, comment=cmd.comment or "", expiration=cmd.expires_at or ""))
+            self.orders.append(Order(ticket=t, symbol=cmd.symbol, type=f"{cmd.side}_{cmd.order_kind or 'LIMIT'}", volume=cmd.volume, price=cmd.price, sl=cmd.sl or 0, tp=cmd.tp or 0, comment=cmd.comment or "", expiration=cmd.expires_at or ""))
             r.order = t
         elif cmd.type == "modify_sl":
             p = self._pos(cmd.position or 0)

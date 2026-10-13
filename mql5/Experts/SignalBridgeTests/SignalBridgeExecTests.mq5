@@ -133,7 +133,32 @@ void OnTick()
          AssertTrue(r.ok, "exec: cancel ok");
          AssertTrue(!OrderSelect(g_ord), "exec: order gone");
          break; }
-      case 11: { // failures are results, not crashes
+      case 11: { // open_pending STOP (buy stop above ask, sell stop below bid) + cancel; bad order_kind fails
+         BridgeCommand c; BridgeResult r;
+         double up = NormalizeDouble(SymbolInfoDouble(_Symbol, SYMBOL_ASK) + 300 * _Point, _Digits);
+         double dn = NormalizeDouble(SymbolInfoDouble(_Symbol, SYMBOL_BID) - 300 * _Point, _Digits);
+         string exp = TimeToString(TimeCurrent() + 86400, TIME_DATE|TIME_SECONDS);
+         ParseCommand("{\"cmd_id\":\"s4:L1:1\",\"type\":\"open_pending\",\"order_kind\":\"STOP\",\"symbol\":\"" + _Symbol + "\",\"side\":\"BUY\",\"volume\":0.10,\"price\":" + DoubleToString(up, _Digits) + ",\"sl\":" + DoubleToString(up - 500 * _Point, _Digits) + ",\"tp\":" + DoubleToString(up + 500 * _Point, _Digits) + ",\"comment\":\"sig:s4:L1\",\"expires_at\":\"" + exp + "\"}", c);
+         g_exec.Execute(c, r);
+         AssertTrue(r.ok && OrderSelect(r.order), "exec: buy stop placed");
+         AssertEqLong(ORDER_TYPE_BUY_STOP, OrderGetInteger(ORDER_TYPE), "exec: buy stop type");
+         ulong buy_stop = r.order;
+         ParseCommand("{\"cmd_id\":\"s4:L2:1\",\"type\":\"open_pending\",\"order_kind\":\"STOP\",\"symbol\":\"" + _Symbol + "\",\"side\":\"SELL\",\"volume\":0.10,\"price\":" + DoubleToString(dn, _Digits) + ",\"sl\":" + DoubleToString(dn + 500 * _Point, _Digits) + ",\"tp\":" + DoubleToString(dn - 500 * _Point, _Digits) + ",\"comment\":\"sig:s4:L2\",\"expires_at\":\"" + exp + "\"}", c);
+         g_exec.Execute(c, r);
+         AssertTrue(r.ok && OrderSelect(r.order), "exec: sell stop placed");
+         AssertEqLong(ORDER_TYPE_SELL_STOP, OrderGetInteger(ORDER_TYPE), "exec: sell stop type");
+         ulong sell_stop = r.order;
+         ParseCommand("{\"cmd_id\":\"s4:L1:2\",\"type\":\"cancel\",\"order\":" + IntegerToString((long)buy_stop) + "}", c);
+         g_exec.Execute(c, r);
+         ParseCommand("{\"cmd_id\":\"s4:L2:2\",\"type\":\"cancel\",\"order\":" + IntegerToString((long)sell_stop) + "}", c);
+         g_exec.Execute(c, r);
+         AssertTrue(!OrderSelect(buy_stop) && !OrderSelect(sell_stop), "exec: stop orders cancelled");
+         ParseCommand("{\"cmd_id\":\"s4:L3:1\",\"type\":\"open_pending\",\"order_kind\":\"TRAILING\",\"symbol\":\"" + _Symbol + "\",\"side\":\"BUY\",\"volume\":0.10,\"price\":" + DoubleToString(up, _Digits) + ",\"sl\":0,\"tp\":0,\"comment\":\"x\"}", c);
+         g_exec.Execute(c, r);
+         AssertTrue(!r.ok && StringFind(r.retcode_text, "order_kind") >= 0, "exec: unknown order_kind fails");
+         AssertEqLong(0, OrdersTotal(), "exec: no orders left");
+         break; }
+      case 12: { // failures are results, not crashes
          BridgeCommand c; BridgeResult r;
          ParseCommand("{\"cmd_id\":\"s3:L1:1\",\"type\":\"open_market\",\"symbol\":\"NOPE_XYZ\",\"side\":\"BUY\",\"volume\":0.10,\"sl\":0,\"tp\":0,\"comment\":\"x\"}", c);
          g_exec.Execute(c, r);

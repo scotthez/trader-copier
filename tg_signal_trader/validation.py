@@ -45,4 +45,14 @@ def validate_signal(sig: Signal, cfg: ProviderConfig, quote: Quote | None, now: 
             near = sig.entry_zone[0] if sig.entry_zone else quote.mid
             if abs(near - quote.mid) / quote.mid * 100 > cfg.limit_max_distance_pct:
                 fails.append("limit_too_far")
+        if sig.entry_type == EntryType.STOP and sig.entry_zone:
+            entry, market = sig.entry_zone[0], (quote.ask if buy else quote.bid)
+            if (market >= entry) if buy else (market <= entry):
+                # Already triggered: it goes in at market (ladder.place_run), so hold it to the market rules.
+                if abs(market - entry) / entry * 100 > cfg.market_entry_tolerance_pct:
+                    fails.append("market_too_far")
+                if (market >= sig.tps[0]) if buy else (market <= sig.tps[0]):
+                    fails.append("tp_wrong_side")
+            elif abs(entry - quote.mid) / quote.mid * 100 > cfg.limit_max_distance_pct:
+                fails.append("stop_too_far")
     return fails
