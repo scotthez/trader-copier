@@ -601,3 +601,14 @@ def test_limit_too_far_message_shows_the_price_and_distance():
     inbox(store, far, 180); tr.tick()
     msg = next(m for m in alerts.sent if "Not placed" in m)
     assert "limit entry too far" in msg and "Price was 4346.9 (46.9 away from the entry, 1.08%)" in msg
+
+
+def test_final_parser_rejection_skips_llm_fallback():
+    text = ("Gold 🏆\nPair: XAUUSD 📊\nSide: Short / Sell Stop\nEntry: 4186\nTP: Open\nSL: 4198\n"
+            "TP1 4181 50pips ✅\nTP2 4176 100pips ✅\nTP3 4171 150pips ✅")
+    ex = EntryExtraction(symbol="XAUUSD", side="SELL", entry_type="MARKET", entry_zone=[], sl=4198, tps=[4181, 4176, 4171, None], confidence=0.99)
+    tr, store, fb, _ = make(entries={text: ex})
+    inbox(store, text, 80); tr.tick(); tr.tick()
+    assert store.get_run("wolves:80") is None and fb.sent == []
+    unparsed = [e for e in store.journal_tail() if e["kind"] == "signal_unparsed"]
+    assert len(unparsed) == 1 and "Sell Stop" in unparsed[0]["detail"]["reason"]

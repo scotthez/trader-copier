@@ -10,9 +10,9 @@ _SL = re.compile(r"SL:\s*(" + _NUM + ")")
 _TPN = re.compile(r"TP([1-4]):\s*(" + _NUM + r"|OPEN)(?:\s*(\d+)\s*pips)?", re.I)
 PIP = 0.1   # Wolves is XAUUSD-only; "50pips" = 5.0 in price
 _TP_PLAIN = re.compile(r"^TP:\s*(" + _NUM + ")", re.I | re.M)
-_AT = re.compile(r"^\s*(BUY|SELL)\s+(LIMIT\s+)?([A-Z0-9]+)\s*@\s*(" + _NUM + r")(?:\s+(" + _NUM + "))?", re.I | re.M)
+_AT = re.compile(r"^\s*(BUY|SELL)\s+((?:LIMIT|STOP)\s+)?([A-Z0-9]+)\s*@\s*(" + _NUM + r")(?:\s+(" + _NUM + "))?", re.I | re.M)
 _PAIR = re.compile(r"Pair:\s*([A-Z0-9]+)", re.I)
-_SIDE = re.compile(r"Side:\s*(?:Long|Short)?\s*/?\s*(Buy|Sell)(\s+Limit)?", re.I)
+_SIDE = re.compile(r"Side:\s*(?:Long|Short)?\s*/?\s*(Buy|Sell)(\s+(?:Limit|Stop))?", re.I)
 _ENTRY = re.compile(r"Entry:\s*(" + _NUM + r")(?:\s+(" + _NUM + "))?", re.I)
 _NOW = re.compile(r"^\s*([A-Z]+)\s+(?:re-entry\s+|continue\s+)?(buy|sell)\s+now(?:\s+again)?(?:\s+slowly)?\s*(" + _NUM + r")?\s*-?\s*(" + _NUM + ")?", re.I | re.M)
 
@@ -93,6 +93,13 @@ def _plain_tps(norm: str) -> list[float | None] | None:
     return vals[:3] + ([vals[3]] if len(vals) > 3 else [])
 
 
+def _stop_rejected(template: str, side: str) -> ParseResult:
+    """Buy/Sell Stop orders aren't supported by the bridge. Final, so the LLM fallback can't turn one
+    into a market order (live, 2026-10-13: #30415 "Sell Stop 4186" was read as a market SELL at 4192)."""
+    return ParseResult(template=template, final=True,
+                       rejected_reason=f"{side.capitalize()} Stop orders aren't supported - place it manually if wanted")
+
+
 def _build(msg: InboxMessage, template: str, symbol: str, side: str, entry_type: EntryType,
            zone: list[float], sl: float, tps: list[float | None], pips: dict[int, int] | None = None) -> ParseResult:
     sym = canonical_symbol(symbol)
@@ -125,6 +132,8 @@ class WolvesParser:
             if tps is None:
                 return ParseResult(template="wolves.at", rejected_reason="TP1..TP3 missing")
             zone = [parse_price(m.group(4))] + ([parse_price(m.group(5))] if m.group(5) else [])
+            if m.group(2) and m.group(2).strip().upper() == "STOP":
+                return _stop_rejected("wolves.at", m.group(1))
             limit = bool(m.group(2))
             return _build(msg, "wolves.at", m.group(3), m.group(1), EntryType.LIMIT if limit else EntryType.MARKET,
                           zone if limit else [], sl, tps, _pips(norm))
@@ -135,6 +144,8 @@ class WolvesParser:
                 return ParseResult(template="wolves.block", rejected_reason="TP1..TP3 missing")
             e = _ENTRY.search(norm)
             zone = ([parse_price(e.group(1))] + ([parse_price(e.group(2))] if e.group(2) else [])) if e else []
+            if side.group(2) and side.group(2).strip().upper() == "STOP":
+                return _stop_rejected("wolves.block", side.group(1))
             limit = bool(side.group(2))
             return _build(msg, "wolves.block", pair.group(1), side.group(1), EntryType.LIMIT if limit else EntryType.MARKET,
                           zone if limit else [], sl, tps, _pips(norm))

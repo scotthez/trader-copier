@@ -140,3 +140,32 @@ def test_normal_tps_and_pips_are_left_alone():
     assert _unglue_pips(s, 4156.0) == s                                      # already spaced
     assert _unglue_pips("TP1: 4138pips", 4156.0) == "TP1: 4138pips"         # no extra digits to split off
     assert _unglue_pips("TP1: 41380pips", 4156.0) == "TP1: 41380pips"       # "0 pips" is not a pips note
+
+
+LIVE_30415 = ("Gold 🏆\nPair: XAUUSD 📊\nSide: Short / Sell Stop\nEntry: 4186\nTP: Open\nSL: 4198\n"
+              "Note: past profits do not predict future profits \nRisk 0.5-1-2% \n\n"
+              "TP1 4181 50pips ✅\nTP2 4176 100pips ✅\nTP3 4171 150pips ✅\n\nUse Proper Risk Management")
+
+
+def test_block_sell_stop_is_rejected_not_traded_at_market():
+    # Live, 2026-10-13: "Sell Stop" was read as a market SELL at 4192 instead of waiting for 4186.
+    r = get_parser("wolves").parse(msg(LIVE_30415, 30415), [])
+    assert r.signal is None and r.final and r.template == "wolves.block" and "Sell Stop" in r.rejected_reason
+
+
+def test_block_buy_stop_is_rejected():
+    text = LIVE_30415.replace("Short / Sell Stop", "Long / Buy Stop").replace("SL: 4198", "SL: 4174")
+    r = get_parser("wolves").parse(msg(text), [])
+    assert r.signal is None and r.final and "Buy Stop" in r.rejected_reason
+
+
+def test_at_template_stop_is_rejected():
+    r = get_parser("wolves").parse(msg("SELL STOP XAUUSD @4186\n\nSL 4198\nTP1 4181\nTP2 4176\nTP3 4171\nTP4 Open"), [])
+    assert r.signal is None and r.final and r.template == "wolves.at" and "Sell Stop" in r.rejected_reason
+
+
+def test_block_limit_and_market_still_parse():
+    limit = get_parser("wolves").parse(msg(LIVE_30415.replace("Sell Stop", "Sell Limit").replace("Entry: 4186", "Entry: 4186 4189")), []).signal
+    assert limit.entry_type == EntryType.LIMIT and limit.entry_zone == [4186.0, 4189.0]
+    market = get_parser("wolves").parse(msg(LIVE_30415.replace("Short / Sell Stop", "Short / Sell")), [])
+    assert market.signal.entry_type == EntryType.MARKET and not market.final
