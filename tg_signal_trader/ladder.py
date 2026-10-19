@@ -8,6 +8,15 @@ from .sizing import leg_volume, sl_improves, sl_valid_vs_market
 from .validation import Quote
 
 MISSING_GRACE_SEC = 30      # position absent from state without a deal → CLOSED_MANUAL after this
+RETRY_BACKOFF_SEC = (30, 60, 120, 240, 480, 900)   # wait after the 1st, 2nd, … failure of a retried command; then 15 min
+
+
+def _backoff(fail_count: int) -> timedelta:
+    return timedelta(seconds=RETRY_BACKOFF_SEC[min(fail_count, len(RETRY_BACKOFF_SEC)) - 1])
+
+
+def _may_retry(leg: Leg, now_local: datetime) -> bool:
+    return leg.inflight_cmd is None and (leg.retry_after is None or now_local >= leg.retry_after)
 
 
 def _ev(kind: str, run: SignalRun, **detail) -> dict:
@@ -101,7 +110,7 @@ def place_run(run: SignalRun, cfg: ProviderConfig, state: BridgeState, bridge: B
     return events
 
 
-def apply_results(run: SignalRun, results: list[CommandResult]) -> list[dict]:
+def apply_results(run: SignalRun, results: list[CommandResult], now_local: datetime | None = None) -> list[dict]:
     events: list[dict] = []
     by_id = {r.cmd_id: r for r in results}
     for leg in run.legs:
@@ -114,8 +123,15 @@ def apply_results(run: SignalRun, results: list[CommandResult]) -> list[dict]:
             events.append(_ev("command_failed", run, cmd_id=r.cmd_id, type=kind, leg=leg.n, retcode=r.retcode, text=r.retcode_text))
             if kind in ("open_market", "open_pending"):
                 leg.state, leg.reason = LegState.CANCELLED, f"{kind} failed: {r.retcode} {r.retcode_text}"
+            elif now_local is not None:
+                # A close/cancel/modify that fails is retried by the loops below, which used to resend it
+                # every tick: over a weekend (market closed) that was twice a second until Monday, with a
+                # phone message each time. Back off 30s → 15 min instead.
+                leg.fail_count += 1
+                leg.retry_after = now_local + _backoff(leg.fail_count)
             leg.inflight_sl = None
             continue
+        leg.fail_count, leg.retry_after = 0, None
         if kind == "open_market":
             leg.state, leg.position_ticket, leg.entry_price = LegState.OPEN, r.position or r.order, r.fill_price or None
         elif kind == "open_pending":
@@ -205,15 +221,15 @@ def _expiry_backstop(run: SignalRun, cfg: ProviderConfig, bridge: Bridge, now_lo
     deadline = _local_naive(run.signal.received_at) + timedelta(hours=cfg.pending_ttl_hours, minutes=1)
     if now_local < deadline:
         return []
-    return [_send(run, leg, bridge, "cancel", order=leg.order_ticket) for leg in run.pending_legs() if leg.inflight_cmd is None]
+    return [_send(run, leg, bridge, "cancel", order=leg.order_ticket) for leg in run.pending_legs() if _may_retry(leg, now_local)]
 
 
-def _close_everything(run: SignalRun, bridge: Bridge) -> list[dict]:
+def _close_everything(run: SignalRun, bridge: Bridge, now_local: datetime) -> list[dict]:
     """Closes open legs and cancels pending ones, re-applied every tick so a leg still PLACING when
-    the close was requested is closed as soon as its fill is known."""
+    the close was requested is closed as soon as its fill is known (failed attempts back off)."""
     events: list[dict] = []
     for leg in run.legs:
-        if leg.inflight_cmd is not None:
+        if not _may_retry(leg, now_local):
             continue
         if leg.state == LegState.OPEN:
             events.append(_send(run, leg, bridge, "close", position=leg.position_ticket))
@@ -225,7 +241,7 @@ def _close_everything(run: SignalRun, bridge: Bridge) -> list[dict]:
 def sync_run(run: SignalRun, cfg: ProviderConfig, state: BridgeState, bridge: Bridge, now_local: datetime) -> list[dict]:
     events = _detect(run, state, now_local)
     if run.close_requested:
-        events += _close_everything(run, bridge)
+        events += _close_everything(run, bridge, now_local)
     else:
         events += _ladder(run, bridge)
         events += _expiry_backstop(run, cfg, bridge, now_local)

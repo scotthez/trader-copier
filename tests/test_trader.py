@@ -620,3 +620,34 @@ def test_stop_entry_the_model_reads_as_market_is_rejected():
     tr, store, fb, _ = make(entries={STOP_ENTRY: _ex(side="SELL", entry_type="MARKET", sl=4350, tps=[4339, 4334, 4329, None])})
     inbox(store, STOP_ENTRY, 81); tr.tick()
     assert fb.sent == [] and "crosscheck:entry_type" in next(e for e in store.journal_tail() if e["kind"] == "signal_rejected")["detail"]["reasons"]
+
+
+def test_weekend_market_closed_cancel_does_not_flood():
+    # live, weekend of 2026-10-17: an expired pending order's cancel failed ("market closed") and was resent
+    # every 0.5s tick all weekend, with a phone message each time (~1k messages)
+    from tg_signal_trader.bridge import CommandResult
+    LIMIT = "BUY LIMIT XAUUSD @4340 4338\n\nSL 4330\nTP1 4345\nTP2 4350\nTP3 4355"
+    tr, store, fb, clock = make(entries={LIMIT: _ex(entry_type="LIMIT", entry_zone=[4340, 4338], sl=4330, tps=[4345, 4350, 4355])})
+    tr.alerter = alerts = RecordingAlerter()
+    inbox(store, LIMIT, 190); tr.tick(); tr.tick()
+    assert all(l.state == LegState.PENDING_ORDER for l in store.get_run("wolves:190").legs)
+    real_send = fb.send
+    def closed_market(cmd):
+        if cmd.type == "cancel":
+            fb.sent.append(cmd)
+            fb._results.append(CommandResult(cmd_id=cmd.cmd_id, ok=False, retcode=10018, retcode_text="Market closed", attempts=1))
+        else:
+            real_send(cmd)
+    fb.send = closed_market
+    alerts.sent.clear()
+    clock["local"] += timedelta(hours=24, minutes=2); clock["utc"] += timedelta(hours=24, minutes=2)
+    for _ in range(7200):                                  # one hour of 0.5s ticks
+        fb.now = clock["local"]
+        tr.tick()
+        clock["local"] += timedelta(seconds=0.5); clock["utc"] += timedelta(seconds=0.5)
+    cancels = [c for c in fb.sent if c.type == "cancel"]
+    assert len(cancels) <= 3 * 8                          # 3 legs × (1 + backoff retries in an hour), not 3 × 7200
+    assert len(alerts.sent) <= 3                          # identical failure messages are not repeated
+    fb.send = real_send                                   # market opens: the next retry succeeds
+    clock["local"] += timedelta(minutes=16); fb.now = clock["local"]; tr.tick(); tr.tick()
+    assert all(l.state == LegState.CANCELLED for l in store.get_run("wolves:190").legs)

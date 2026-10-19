@@ -185,7 +185,7 @@ class Trader:
         results = bridge.read_results()
         armed = self.arming_block(provider, state) is None
         for run in self.store.runs(provider, [RunState.PLACING, RunState.ACTIVE]):
-            events = apply_results(run, results)
+            events = apply_results(run, results, self.now_local())
             if state is not None and armed:
                 events += sync_run(run, cfg, state, bridge, self.now_local())
             for e in events:

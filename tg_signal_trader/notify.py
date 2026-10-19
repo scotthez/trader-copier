@@ -116,10 +116,16 @@ def event_line(kind: str, d: dict) -> str | None:
 class TradeNotifier:
     """Collects event lines per (provider, trade) during a tick and sends one message per trade at flush()."""
 
-    def __init__(self, send: Callable[[str], None], get_run: Callable[[str], SignalRun | None]):
+    REPEAT_SUPPRESS_SEC = 1800
+
+    def __init__(self, send: Callable[[str], None], get_run: Callable[[str], SignalRun | None],
+                 now: Callable[[], float] | None = None):
+        import time
         self.send, self.get_run = send, get_run
+        self.now = now or time.monotonic
         self._pending: dict[tuple[str, str | None], list[str]] = {}
         self._headers: dict[tuple[str, str | None], str] = {}
+        self._last_sent: dict[str, float] = {}      # message text → when it was last sent
 
     def on_event(self, provider: str, kind: str, detail: dict, run_id: str | None) -> None:
         line = event_line(kind, detail)
@@ -144,6 +150,13 @@ class TradeNotifier:
                 if run is not None:
                     s = run.signal
                     header = self._header(provider, s.symbol, s.side.value, s.entry_type.value, s.telegram_msg_id)
-            self.send((header or f"[{provider}]") + "\n" + "\n".join(lines))
+            text = (header or f"[{provider}]") + "\n" + "\n".join(lines)
+            now = self.now()
+            last = self._last_sent.get(text)
+            if last is not None and now - last < self.REPEAT_SUPPRESS_SEC:
+                continue            # the same message again (e.g. a retry failing the same way): don't flood the phone
+            self._last_sent = {t: s for t, s in self._last_sent.items() if now - s < self.REPEAT_SUPPRESS_SEC}
+            self._last_sent[text] = now
+            self.send(text)
         self._pending.clear()
         self._headers.clear()

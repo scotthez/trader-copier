@@ -109,6 +109,8 @@ class Leg(BaseModel):
     inflight_kind: str | None = None
     inflight_sl: float | None = None
     missing_since: datetime | None = None
+    fail_count: int = 0                     # consecutive failed close/cancel/modify commands
+    retry_after: datetime | None = None     # no automatic retry of a failed command before this
 
     def comment(self, signal_id: str) -> str:
         return leg_comment(signal_id, self.n)
