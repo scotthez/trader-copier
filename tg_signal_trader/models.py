@@ -111,6 +111,7 @@ class Leg(BaseModel):
     missing_since: datetime | None = None
     fail_count: int = 0                     # consecutive failed close/cancel/modify commands
     retry_after: datetime | None = None     # no automatic retry of a failed command before this
+    inflight_since: datetime | None = None  # first sync that saw the in-flight command (for the no-result timeout)
 
     def comment(self, signal_id: str) -> str:
         return leg_comment(signal_id, self.n)

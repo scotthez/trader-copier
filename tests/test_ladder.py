@@ -272,3 +272,34 @@ def test_entry_taken_at_market_has_an_alert_line():
     assert event_line("entry_taken_at_market", {"order": "stop", "entry": 4186.0, "price": 4185.5}) == "↘️ Price already past the stop 4186: placing at market (4185.5)"
     sig = {"side": "SELL", "entry_type": "STOP", "symbol": "XAUUSD", "entry_zone": [4186.0], "sl": 4198.0, "tps": [4181.0, 4176.0, 4171.0]}
     assert describe_signal(sig) == "SELL STOP XAUUSD @ 4186 · SL 4198 · TP 4181 / 4176 / 4171"
+
+
+def test_cancel_with_no_result_times_out_and_is_retried():
+    # live 2026-10-19: SignalBridge was off for the weekend, then skipped/lost queued cancels; their legs stayed
+    # "in flight" forever, never retried, and the run kept counting toward max_open_signals
+    from datetime import timedelta
+    from tg_signal_trader.ladder import INFLIGHT_TIMEOUT_SEC
+    fb, run = bridge(), mk(entry_type=EntryType.LIMIT, zone=[4340.0, 4338.0], sl=4330.0, tps=(4345.0, 4350.0, 4355.0))
+    place_run(run, CFG, fb.read_state(), fb, fb.now); pump(run, fb)
+    lost = fb.send
+    fb.send = lambda cmd: None                                    # the EA never answers
+    apply_action(run, "cancel_pending", None, fb.read_state(), fb, CFG)
+    assert all(l.inflight_kind == "cancel" for l in run.legs)
+    t = fb.now
+    sync_run(run, CFG, fb.read_state(), fb, t)
+    ev = sync_run(run, CFG, fb.read_state(), fb, t + timedelta(seconds=INFLIGHT_TIMEOUT_SEC + 1))
+    assert [e["kind"] for e in ev].count("command_timeout") == 3
+    assert all(l.inflight_cmd is None and l.fail_count == 1 and l.state == LegState.PENDING_ORDER for l in run.legs)
+    fb.send = lost                                                # EA back: the run can be managed again
+    apply_action(run, "cancel_pending", None, fb.read_state(), fb, CFG); pump(run, fb)
+    assert all(l.state == LegState.CANCELLED for l in run.legs)
+
+
+def test_open_commands_never_time_out():
+    from datetime import timedelta
+    fb, run = bridge(), mk()
+    fb.send = lambda cmd: None
+    place_run(run, CFG, fb.read_state(), fb, fb.now)
+    sync_run(run, CFG, fb.read_state(), fb, fb.now)
+    sync_run(run, CFG, fb.read_state(), fb, fb.now + timedelta(hours=1))
+    assert all(l.inflight_kind == "open_market" and l.state == LegState.PLACING for l in run.legs)

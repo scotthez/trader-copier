@@ -8,6 +8,7 @@ from .sizing import leg_volume, sl_improves, sl_valid_vs_market
 from .validation import Quote
 
 MISSING_GRACE_SEC = 30      # position absent from state without a deal → CLOSED_MANUAL after this
+INFLIGHT_TIMEOUT_SEC = 120  # a close/cancel/modify with no result after this counts as failed (retried with backoff)
 RETRY_BACKOFF_SEC = (30, 60, 120, 240, 480, 900)   # wait after the 1st, 2nd, … failure of a retried command; then 15 min
 
 
@@ -25,7 +26,7 @@ def _ev(kind: str, run: SignalRun, **detail) -> dict:
 
 def _send(run: SignalRun, leg: Leg, bridge: Bridge, cmd_type: str, **fields) -> dict:
     cmd = Command(cmd_id=run.next_cmd_id(leg.n), type=cmd_type, **fields)
-    leg.inflight_cmd, leg.inflight_kind = cmd.cmd_id, cmd_type
+    leg.inflight_cmd, leg.inflight_kind, leg.inflight_since = cmd.cmd_id, cmd_type, None
     leg.inflight_sl = fields.get("sl") if cmd_type == "modify_sl" else None
     try:
         bridge.send(cmd)
@@ -118,7 +119,7 @@ def apply_results(run: SignalRun, results: list[CommandResult], now_local: datet
         if r is None:
             continue
         kind = leg.inflight_kind
-        leg.inflight_cmd = leg.inflight_kind = None
+        leg.inflight_cmd = leg.inflight_kind = leg.inflight_since = None
         if not r.ok:
             events.append(_ev("command_failed", run, cmd_id=r.cmd_id, type=kind, leg=leg.n, retcode=r.retcode, text=r.retcode_text))
             if kind in ("open_market", "open_pending"):
@@ -238,8 +239,30 @@ def _close_everything(run: SignalRun, bridge: Bridge, now_local: datetime) -> li
     return events
 
 
+def _expire_inflight(run: SignalRun, now_local: datetime) -> list[dict]:
+    """A close/cancel/modify whose result never comes (the EA was off or lost the command, or skipped a
+    backlog) used to leave its leg "in flight" forever: never re-detected, never retried, and the run
+    kept counting toward max_open_signals. After INFLIGHT_TIMEOUT_SEC it counts as a failure instead.
+    Opening commands are left alone: a late fill must still be matched to its leg."""
+    events: list[dict] = []
+    for leg in run.legs:
+        if leg.inflight_cmd is None or leg.inflight_kind in ("open_market", "open_pending"):
+            continue
+        if leg.inflight_since is None:
+            leg.inflight_since = now_local
+            continue
+        if (now_local - leg.inflight_since).total_seconds() < INFLIGHT_TIMEOUT_SEC:
+            continue
+        events.append(_ev("command_timeout", run, leg=leg.n, type=leg.inflight_kind, cmd_id=leg.inflight_cmd))
+        leg.inflight_cmd = leg.inflight_kind = leg.inflight_sl = leg.inflight_since = None
+        leg.fail_count += 1
+        leg.retry_after = now_local + _backoff(leg.fail_count)
+    return events
+
+
 def sync_run(run: SignalRun, cfg: ProviderConfig, state: BridgeState, bridge: Bridge, now_local: datetime) -> list[dict]:
-    events = _detect(run, state, now_local)
+    events = _expire_inflight(run, now_local)
+    events += _detect(run, state, now_local)
     if run.close_requested:
         events += _close_everything(run, bridge, now_local)
     else:
