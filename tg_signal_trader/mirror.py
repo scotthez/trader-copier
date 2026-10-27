@@ -287,6 +287,7 @@ class MirrorEngine:
             store.listeners.append(self._on_journal)
         self._login_warned: set[tuple[str, int]] = set()
         self._waiting: dict[str, str] = {}             # mirror -> why its events are held
+        self._waiting_since: dict[str, datetime] = {}  # mirror -> first tick its events were held
         self._blocked_notice: dict[str, str] = {}      # destination -> arming block already journaled
 
     def _on_journal(self, provider: str, kind: str, detail: dict, run_id: str | None) -> None:
@@ -426,12 +427,17 @@ class MirrorEngine:
             self.store.kv_set(self._cursor_key(mirror), json.dumps(end))
 
     def _wait(self, mirror: str, why: str) -> bool:
-        if mirror not in self._waiting:
+        """Holds the event. Announced once the destination has been unavailable for terminal_alert_sec:
+        a single unreadable state.json (Windows refuses the read while the EA replaces the file) is not news."""
+        now = self.now_local()
+        since = self._waiting_since.setdefault(mirror, now)
+        if mirror not in self._waiting and (now - since).total_seconds() >= self.cfg.terminal_alert_sec:
             self._waiting[mirror] = why
             self.store.journal(f"mirror:{mirror}", "mirror_waiting", {"destination": self.cfg.mirrors[mirror].destination, "why": why})
         return False
 
     def _resume(self, mirror: str) -> None:
+        self._waiting_since.pop(mirror, None)
         if self._waiting.pop(mirror, None) is not None:
             self.store.journal(f"mirror:{mirror}", "mirror_resumed", {"destination": self.cfg.mirrors[mirror].destination})
 

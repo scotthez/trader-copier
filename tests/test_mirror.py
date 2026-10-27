@@ -414,6 +414,16 @@ def test_destination_arming_guard(tmp_path):
     assert fb.sent == [] and any("REAL account but live: false" in a for a in alerts.sent)
 
 
+def test_one_unreadable_state_is_retried_silently(tmp_path):
+    eng, store, fb, clock, alerts, f = make(tmp_path)
+    real = fb.read_state
+    misses = iter([None])
+    fb.read_state = lambda: next(misses, None) or real()     # Windows: state.json mid-replace for one read
+    write(f, opened())
+    step(eng, fb, clock, n=3)
+    assert [c.type for c in fb.sent] == ["open_market"] and not any("not responding" in a for a in alerts.sent)
+
+
 def test_stale_open_not_mirrored(tmp_path):
     eng, store, fb, clock, alerts, f = make(tmp_path)
     write(f, opened(ts=LOCAL0 - timedelta(seconds=400)))
@@ -427,9 +437,11 @@ def test_silent_destination_holds_events_until_back(tmp_path):
     fb.read_state = lambda: frozen       # terminal stopped writing state.json
     write(f, opened(ts=LOCAL0 + timedelta(seconds=10)))
     clock["now"] = LOCAL0 + timedelta(seconds=10); eng.tick()
+    assert fb.sent == [] and alerts.sent[-1:] != [] and not any("not responding" in a for a in alerts.sent)   # one miss is not news
+    clock["now"] = LOCAL0 + timedelta(seconds=70); eng.tick()
     assert fb.sent == [] and any("⏳ Destination demo terminal not responding" in a for a in alerts.sent)
     del fb.read_state                    # back
-    fb.now = clock["now"] = LOCAL0 + timedelta(seconds=30)
+    fb.now = clock["now"] = LOCAL0 + timedelta(seconds=75)
     eng.tick(); eng.tick()
     assert [c.type for c in fb.sent] == ["open_market"] and any("mirroring resumed" in a for a in alerts.sent)
 
@@ -551,3 +563,26 @@ def test_dry_run_journals_commands_and_does_not_report_a_vanished_position(tmp_p
     assert fb.sent == [] and fb.positions == []
     assert [e["detail"]["type"] for e in reversed(store.journal_tail(200)) if e["kind"] == "dry_run_command"] == ["open_market", "close"]
     assert not any("outside the mirror" in a for a in alerts.sent)
+
+
+def test_windows_vps_config_template_parses():
+    text = (Path(__file__).parent.parent / "deploy" / "windows" / "mirror-config.yaml").read_text()
+    text = text.replace("<DESTINATION DATA FOLDER>", "C:/MT5/dest").replace("<you>", "Administrator")
+    cfg = AppConfig.model_validate(yaml.safe_load(text))
+    m = cfg.mirrors["icon"]
+    assert m.source.login == 4100074 and cfg.mirror_destination("icon").expected_login == 1515095790
+    assert cfg.mirror_destination("icon").live is False and cfg.notify_trades is False and cfg.providers == {}
+    assert m.sizing.mode == "source_lots" and m.sizing.multiplier == 1.0 and m.source.include_magics == [0]
+    assert m.source.events_base == "iconmirror" and m.source.symbols["XAUUSD.p"] == "XAUUSD"
+
+
+def test_bridge_ping_reaches_a_mirror_destination(tmp_path, capsys):
+    from tg_signal_trader.cli import main
+    events = tmp_path / "Common"; events.mkdir()
+    cfg = {"accounts": {"dest_demo": {"bridge_dir": str(tmp_path / "sb"), "expected_login": 1515095790}},
+           "mirrors": {"icon": {"source": {"login": SRC, "events_dir": str(events)}, "destination": "dest_demo", "max_lots": 1}},
+           "db_path": str(tmp_path / "m.sqlite")}
+    p = tmp_path / "c.yaml"; p.write_text(yaml.safe_dump(cfg))
+    assert main(["--config", str(p), "bridge-ping", "nope"]) == 1 and "known: dest_demo" in capsys.readouterr().out
+    assert main(["--config", str(p), "bridge-ping", "dest_demo", "--timeout", "0.2"]) == 1      # no EA here: no pong
+    assert "NO RESPONSE" in capsys.readouterr().out and (tmp_path / "sb" / "commands.jsonl").exists()

@@ -1,0 +1,30 @@
+# tg-trader config for the account mirror on the Windows VPS: IconTech 4100074 -> 1515095790 (demo).
+# Use forward slashes in paths. Replace <you> and <DESTINATION DATA FOLDER> (File -> Open Data Folder
+# in the 1515095790 terminal).
+accounts:
+  dest_demo:
+    bridge_dir: <DESTINATION DATA FOLDER>/MQL5/Files/signalbridge
+    expected_login: 1515095790
+    live: false                     # demo: commands to a REAL account are refused while this is false
+mirrors:
+  icon:
+    source:
+      login: 4100074
+      events_dir: C:/Users/<you>/AppData/Roaming/MetaQuotes/Terminal/Common/Files
+      events_base: iconmirror       # = CopierSource InpEventsFileBase on the IconTech terminal
+      include_magics: [0]           # trades placed by hand
+      symbols:                      # IconTech name -> destination name (as its Market Watch shows it)
+        XAUUSD.p: XAUUSD
+        EURUSD.p: EURUSD
+        GBPUSD.p: GBPUSD
+        USDJPY.p: USDJPY
+    destination: dest_demo
+    sizing: { mode: source_lots, multiplier: 1.0 }   # same lots as the source
+    max_lots: 1.0                   # safety cap per trade
+    stop_loss: copy
+    take_profit: copy
+    mirror_closes: proportional
+    max_open_age_sec: 300
+notify_trades: false                # no Telegram messages; everything is in the journal
+poll_interval_sec: 0.1
+db_path: C:/tg-mirror/mirror.sqlite

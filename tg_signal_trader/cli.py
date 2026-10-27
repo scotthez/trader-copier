@@ -276,7 +276,10 @@ def main(argv: list[str] | None = None) -> int:
             print(e["ts"], e["provider"], e["kind"], e["run_id"] or "", e["detail"])
         return 0
     if a.cmd == "bridge-ping":
-        rtt = bridge_ping(_bridges(cfg, store)[a.provider], a.timeout)
+        targets = {**_mirror_bridges(cfg, store), **_bridges(cfg, store)}     # a provider or a mirror destination account
+        if a.provider not in targets:
+            print(f"unknown terminal {a.provider!r}; known: {', '.join(targets) or 'none'}"); return 1
+        rtt = bridge_ping(targets[a.provider], a.timeout)
         print(f"{a.provider}: {'pong in %.3fs' % rtt if rtt is not None else 'NO RESPONSE — is SignalBridge attached and Algo Trading on?'}")
         return 0 if rtt is not None else 1
     if a.cmd == "bridge-test":
