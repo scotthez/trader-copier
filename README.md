@@ -112,9 +112,9 @@ Nothing is ever sent to the source account: the mirror only reads CopierSource's
 
 ### Setup
 
-1. **Source terminal** (e.g. IconTech 4100074): install `CopierSource` from `mt5-copytrader`
-   (`src/MQL5/Include/CopyTrader` → `MQL5/Include/`, `src/MQL5/Experts/CopyTrader/CopierSource.mq5` →
-   `MQL5/Experts/`, compile with F7), attach it to one chart with `InpExpectedLogin` = the source login.
+1. **Source terminal** (e.g. IconTech 4100074): install `CopierSource` (copied here from
+   `mt5-copytrader`: `mql5/Include/CopyTrader` → `MQL5/Include/`, `mql5/Experts/CopyTrader/CopierSource.mq5`
+   → `MQL5/Experts/CopyTrader/`, compile with F7), attach it to one chart with `InpExpectedLogin` = the source login.
    It needs the 2026-10-27 build or later (its events carry `login`/`magic`/`comment`; older lines are
    ignored with a `source login unknown` alert). It writes
    `Common/Files/<InpEventsFileBase>_events_YYYYMMDD.jsonl`; under Wine, Common/Files is
@@ -151,6 +151,8 @@ notify_trades: true                # false = journal only, no Telegram messages
 poll_interval_sec: 0.1
 ```
 
+   On a Windows VPS, `deploy/windows/SETUP.md` walks through all of this from a `git clone`, with
+   install/status/run/latency `.bat` files and a ready config (`deploy/windows/mirror-config.yaml`).
 4. `tg-trader status` shows each mirror (`armed (demo)`, the events file it reads, open mirrored
    positions); `tg-trader run` (or `--dry-run`) runs mirrors and providers in one loop.
 
