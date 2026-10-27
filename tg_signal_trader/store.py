@@ -1,4 +1,4 @@
-"""SQLite persistence: inbox, runs, journal, classifications, kv."""
+"""SQLite persistence: inbox, runs, journal, classifications, kv, mirror positions."""
 from __future__ import annotations
 import json
 import sqlite3
@@ -12,6 +12,7 @@ CREATE TABLE IF NOT EXISTS runs (id TEXT PRIMARY KEY, provider TEXT, state TEXT,
 CREATE TABLE IF NOT EXISTS journal (id INTEGER PRIMARY KEY AUTOINCREMENT, ts TEXT, provider TEXT, kind TEXT, run_id TEXT, detail TEXT);
 CREATE TABLE IF NOT EXISTS classifications (id INTEGER PRIMARY KEY AUTOINCREMENT, ts TEXT, provider TEXT, msg_id INTEGER, text TEXT, action TEXT, price REAL, confidence REAL, reason TEXT, executed INTEGER);
 CREATE TABLE IF NOT EXISTS kv (key TEXT PRIMARY KEY, value TEXT);
+CREATE TABLE IF NOT EXISTS mirror_positions (mirror TEXT, source_pos_id INTEGER, state TEXT, data TEXT, updated_at TEXT, PRIMARY KEY(mirror, source_pos_id));
 """
 
 
@@ -98,3 +99,19 @@ class Store:
 
     def kv_set(self, key: str, value: str) -> None:
         self.conn.execute("INSERT OR REPLACE INTO kv VALUES (?,?)", (key, value))
+
+    # mirror positions: source position id -> destination ticket, one row per mirrored source position
+    def save_mirror_position(self, mirror: str, source_pos_id: int, state: str, data: str) -> None:
+        self.conn.execute("INSERT OR REPLACE INTO mirror_positions VALUES (?,?,?,?,?)", (mirror, source_pos_id, state, data, _now()))
+
+    def get_mirror_position(self, mirror: str, source_pos_id: int) -> str | None:
+        r = self.conn.execute("SELECT data FROM mirror_positions WHERE mirror=? AND source_pos_id=?", (mirror, source_pos_id)).fetchone()
+        return r["data"] if r else None
+
+    def mirror_positions(self, mirror: str, states: list[str] | None = None) -> list[str]:
+        if states:
+            q = f"SELECT data FROM mirror_positions WHERE mirror=? AND state IN ({','.join('?' * len(states))}) ORDER BY source_pos_id"
+            rows = self.conn.execute(q, (mirror, *states))
+        else:
+            rows = self.conn.execute("SELECT data FROM mirror_positions WHERE mirror=? ORDER BY source_pos_id", (mirror,))
+        return [r["data"] for r in rows]

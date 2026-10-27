@@ -179,6 +179,7 @@ class FakeBridge:
         self._results: list[CommandResult] = []
         self._fail: dict[str, tuple[int, str]] = {}
         self._ticket = 1000
+        self._done_ids: set[str] = set()
 
     # --- test helpers -------------------------------------------------
     def set_quote(self, symbol: str, bid: float, ask: float, **spec) -> None:
@@ -199,13 +200,19 @@ class FakeBridge:
     def _pos(self, ticket: int) -> Position | None:
         return next((p for p in self.positions if p.ticket == ticket), None)
 
-    def _close_position(self, ticket: int, reason: str, price: float | None = None) -> None:
+    def _close_position(self, ticket: int, reason: str, price: float | None = None, volume: float | None = None) -> float:
+        """Closes the position, or `volume` lots of it when that is less than its volume. Returns the price."""
         p = self._pos(ticket)
         if p is None:
-            return
-        self.positions.remove(p)
+            return 0.0
         px = price if price is not None else (self.symbols[p.symbol].bid if p.type == "BUY" else self.symbols[p.symbol].ask)
-        self.deals.append(Deal(ticket=self._next_ticket(), position_id=ticket, entry="OUT", reason=reason, price=px, volume=p.volume, time=fmt_ts(self.now)))
+        closed = p.volume if volume is None or volume >= p.volume - 1e-9 else volume
+        if closed < p.volume - 1e-9:
+            p.volume = round(p.volume - closed, 8)
+        else:
+            self.positions.remove(p)
+        self.deals.append(Deal(ticket=self._next_ticket(), position_id=ticket, entry="OUT", reason=reason, price=px, volume=closed, time=fmt_ts(self.now)))
+        return px
 
     def hit_tp(self, ticket: int) -> None:
         p = self._pos(ticket); self._close_position(ticket, "TP", p.tp if p else None)
@@ -231,6 +238,9 @@ class FakeBridge:
     # --- Bridge protocol -----------------------------------------------
     def send(self, cmd: Command) -> None:
         self.sent.append(cmd)
+        if cmd.cmd_id in self._done_ids:
+            return          # SignalBridge executes a cmd_id at most once ("duplicate cmd_id skipped", no result)
+        self._done_ids.add(cmd.cmd_id)
         if cmd.type in self._fail:
             rc, text = self._fail.pop(cmd.type)
             self._results.append(CommandResult(cmd_id=cmd.cmd_id, ok=False, retcode=rc, retcode_text=text, attempts=1))
@@ -258,12 +268,18 @@ class FakeBridge:
                 r = CommandResult(cmd_id=cmd.cmd_id, ok=False, retcode=10036, retcode_text="position closed", attempts=1)
             else:
                 p.sl = cmd.sl; r.position = p.ticket
+        elif cmd.type == "modify_sltp":
+            p = self._pos(cmd.position or 0)
+            if p is None:
+                r = CommandResult(cmd_id=cmd.cmd_id, ok=False, retcode=10036, retcode_text="position closed", attempts=1)
+            else:
+                p.sl, p.tp = cmd.sl or 0, cmd.tp or 0; r.position = p.ticket
         elif cmd.type == "close":
             p = self._pos(cmd.position or 0)
             if p is None:
                 r = CommandResult(cmd_id=cmd.cmd_id, ok=False, retcode=10036, retcode_text="position closed", attempts=1)
             else:
-                self._close_position(p.ticket, "EXPERT"); r.position = cmd.position
+                r.fill_price = self._close_position(p.ticket, "EXPERT", volume=cmd.volume); r.position = cmd.position
         elif cmd.type == "cancel":
             before = len(self.orders)
             self.orders = [o for o in self.orders if o.ticket != cmd.order]

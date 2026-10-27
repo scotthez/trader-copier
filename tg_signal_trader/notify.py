@@ -114,26 +114,30 @@ def event_line(kind: str, d: dict) -> str | None:
 
 
 class TradeNotifier:
-    """Collects event lines per (provider, trade) during a tick and sends one message per trade at flush()."""
+    """Collects event lines per (provider, trade) during a tick and sends one message per trade at flush().
+    `line` turns a journal event into a line (event_line for signal trades, mirror.mirror_event_line for
+    mirrors); an event's detail may carry its message "header" directly."""
 
     REPEAT_SUPPRESS_SEC = 1800
 
     def __init__(self, send: Callable[[str], None], get_run: Callable[[str], SignalRun | None],
-                 now: Callable[[], float] | None = None):
+                 now: Callable[[], float] | None = None, line: Callable[[str, dict], str | None] = event_line):
         import time
-        self.send, self.get_run = send, get_run
+        self.send, self.get_run, self.line = send, get_run, line
         self.now = now or time.monotonic
         self._pending: dict[tuple[str, str | None], list[str]] = {}
         self._headers: dict[tuple[str, str | None], str] = {}
         self._last_sent: dict[str, float] = {}      # message text → when it was last sent
 
     def on_event(self, provider: str, kind: str, detail: dict, run_id: str | None) -> None:
-        line = event_line(kind, detail)
+        line = self.line(kind, detail)
         if line is None:
             return
         key = (provider, run_id)
         self._pending.setdefault(key, []).append(line)
-        if key not in self._headers and "signal" in detail and isinstance(detail["signal"], dict):
+        if key not in self._headers and isinstance(detail.get("header"), str):
+            self._headers[key] = detail["header"]
+        elif key not in self._headers and "signal" in detail and isinstance(detail["signal"], dict):
             s = detail["signal"]
             self._headers[key] = self._header(provider, s["symbol"], s["side"], s["entry_type"], s["telegram_msg_id"])
 

@@ -286,3 +286,14 @@ parseable `state.json`, refusal on wrong login.
    (or any two demo terminals) on the VPS — the FTMO/copier terminals are not part of this system and
    need not be set up first.
 4. Go live with `risk_pct_per_leg: 0.25`; raise to 1.0 after a full week of correct ladders.
+
+## Addendum 2026-10-27: account → account mirror
+
+`mirrors:` (module `mirror.py`) copies the owner's own trades from a source MT5 account to a
+destination account's SignalBridge. The source side is mt5-copytrader's `CopierSource` events file
+(read-only; events now carry `login`, `magic`, `comment`). Per mirror: source login check, magic and
+symbol filters, copy-platform / bot / mirror positions always excluded, sizing `balance_ratio` |
+`source_lots` | `fixed_lots` capped by `max_lots`, SL/TP `copy` | `none` | `fixed_pips`, proportional
+partial closes, `mirror_positions` table for restart safety, the provider arming guard on the
+destination, alerts through the same bot, `mirror_latency` journal rows. SignalBridge gained
+`modify_sltp` and `close` with `volume` (partial close) for it. Setup and checklist: README.

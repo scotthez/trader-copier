@@ -1,7 +1,8 @@
 # tg-signal-trader
 
 Executes Telegram signal-channel trades on MT5 accounts through a file bridge. One provider → one
-account: Lewis → PUPrime, Wolves → IconTech (both configurable; nothing is hardcoded).
+account: Lewis → PUPrime, Wolves → IconTech (both configurable; nothing is hardcoded). It can also
+mirror your own trades from one MT5 account to another (see *Mirror one of my accounts to another*).
 
 Design spec: `docs/superpowers/specs/2026-09-18-tg-signal-trader-design.md`.
 
@@ -92,6 +93,104 @@ unless you pass `--live`.
    management messages (costs cents) — use it to compare models before trusting one.
 3. Demo accounts armed for a week.
 4. Live with `risk_pct_per_leg: 0.25`, then 1.0.
+
+## Mirror one of my accounts to another
+
+`mirrors:` copies **your own** trades from one MT5 account (the source) to an account at another
+broker (the destination): every open, partial close, close and SL/TP change on the source is placed on
+the destination through its SignalBridge, and messaged through the alert bot. Which account is which
+is purely config: swap `source.login`/`events_dir` and `destination` to reverse it.
+
+What is mirrored: source positions whose magic is in `include_magics` (default `[0]`, trades you
+placed by hand; add your own EAs' magics) and, if `symbols` is set, whose symbol is listed. Never
+mirrored, whatever the config says: copy-trading platform positions (a random 20–24 character id as
+the comment, or IconTech's copy magic 2147483646), this bot's provider legs (`sig:`), CopierDestination
+copies (`copy:`) and mirror trades (`m:`). Those are journaled as `mirror_filtered`, without a message.
+Positions already open when a mirror first starts are not copied.
+
+Nothing is ever sent to the source account: the mirror only reads CopierSource's events file.
+
+### Setup
+
+1. **Source terminal** (e.g. IconTech 4100074): install `CopierSource` from `mt5-copytrader`
+   (`src/MQL5/Include/CopyTrader` → `MQL5/Include/`, `src/MQL5/Experts/CopyTrader/CopierSource.mq5` →
+   `MQL5/Experts/`, compile with F7), attach it to one chart with `InpExpectedLogin` = the source login.
+   It needs the 2026-10-27 build or later (its events carry `login`/`magic`/`comment`; older lines are
+   ignored with a `source login unknown` alert). It writes
+   `Common/Files/<InpEventsFileBase>_events_YYYYMMDD.jsonl`; under Wine, Common/Files is
+   `<prefix>/drive_c/users/<user>/AppData/Roaming/MetaQuotes/Terminal/Common/Files` (on this Mac:
+   `~/Library/Application Support/net.metaquotes.wine.metatrader5/drive_c/users/<user>/…`).
+2. **Destination terminal** (e.g. 1514988624): SignalBridge as in *VPS setup* step 2, with
+   `InpExpectedLogin` = the destination login and every destination symbol in `InpSymbols`. It must be a
+   hedging account (one destination position per source position).
+3. Config (with or without `providers:`):
+
+```yaml
+accounts:                          # destinations that are not a Telegram provider's terminal
+  ftmo_demo:
+    bridge_dir: /abs/path/to/destination/MQL5/Files/signalbridge
+    expected_login: 1514988624
+    live: false                    # a REAL destination is refused until this is true
+mirrors:
+  icon:                            # 1-8 chars a-z 0-9 _; destination comments are m:icon:<source position>
+    source:
+      login: 4100074               # events written by any other account are ignored (and alerted once)
+      events_dir: /abs/path/to/Common/Files
+      events_base: copytrader      # CopierSource InpEventsFileBase
+      include_magics: [0]          # 0 = trades placed by hand
+      symbols: { XAUUSD.p: XAUUSD, EURUSD.p: EURUSD }   # source → destination name; omit for all symbols, same names
+    destination: ftmo_demo         # a name under accounts: or providers:
+    sizing: { mode: source_lots, multiplier: 1.0 }      # same lots; or balance_ratio (× dest/source balance), or fixed_lots + lots
+    max_lots: 1.0                  # cap on any destination trade
+    stop_loss: copy                # copy | none | { fixed_pips: 20 }
+    take_profit: copy
+    pip_size: { XAUUSD: 0.1 }      # needed by fixed_pips except on 3/5-digit FX (10 points)
+    mirror_closes: proportional    # a source partial close closes the same fraction (rounded to the lot step)
+    max_open_age_sec: 300          # an OPEN read later than this (terminal down) is not copied
+notify_trades: true                # false = journal only, no Telegram messages
+poll_interval_sec: 0.1
+```
+
+4. `tg-trader status` shows each mirror (`armed (demo)`, the events file it reads, open mirrored
+   positions); `tg-trader run` (or `--dry-run`) runs mirrors and providers in one loop.
+
+Sizing rounds to the nearest lot step, never below the broker minimum, never above `max_lots`.
+Contract sizes differ between brokers (e.g. index CFDs); check one trade's value and adjust
+`multiplier` if they do. A partial close that would leave less than one lot step to close (e.g. a
+0.01-lot destination) is left for the final close; the source's CLOSE always closes whatever remains.
+A destination position that closes by itself (its own SL/TP, or by hand) is reported and not reopened.
+After three failed commands on one position the mirror stops touching it and says so (`NEEDS A HAND
+CHECK` in `status`).
+
+Restarts: each source position's destination ticket is kept in the `mirror_positions` table and saved
+before any command, and the events cursor only moves past an event once it has been acted on, so a
+replayed OPEN is re-sent with the same `cmd_id` (SignalBridge executes it once) or adopted by its
+comment, and a close that arrived while the trader was down is applied when it starts.
+
+### Latency
+
+Every mirrored action journals `mirror_latency`; `tg-trader mirror-latency` prints the last 50:
+source event → read by the trader (`src->read`; the source timestamp is whole seconds, so ±1 s, and
+both terminals must be on the same clock), read → command written, written → SignalBridge result.
+For the fastest copies: `poll_interval_sec: 0.1` in the config and `InpPollMs = 100` on the
+destination SignalBridge. CopierSource writes each event from `OnTradeTransaction` as it happens.
+
+### Demo checklist (destination on a DEMO account, `live: false`)
+
+- [ ] `tg-trader status`: the mirror line says `armed (demo)` and names today's events file.
+- [ ] Open a trade by hand on the source → message *Source opened … / Placing … / Placed …*; the
+      destination shows the same symbol/side, the configured lots, SL/TP per the modes, comment `m:<name>:<id>`.
+- [ ] Move the source SL/TP → destination follows (`copy` modes only).
+- [ ] Partially close the source → the destination closes the same fraction; message shows P/L.
+- [ ] Close the source → the destination closes the rest; `status` no longer lists it.
+- [ ] A copy-platform or EA trade on the source → nothing on the destination, no message, a
+      `mirror_filtered` line in `tg-trader journal`.
+- [ ] Stop `tg-trader`, open and close a trade on the source, start it again → the close is applied,
+      nothing opens twice (an open older than `max_open_age_sec` is reported as not mirrored).
+- [ ] Close the destination terminal for a minute while opening a source trade → *terminal not
+      responding* message, then the trade is placed when it returns (within `max_open_age_sec`).
+- [ ] Log the destination terminal into a different account → *Not mirrored: … wrong account*.
+- [ ] `tg-trader mirror-latency` shows the timings you expect.
 
 ## Developing
 

@@ -36,10 +36,36 @@ def _bridges(cfg: AppConfig, store: Store) -> dict[str, Bridge]:
     return out
 
 
-def _persist_offsets(bridges: dict[str, Bridge], store: Store) -> None:
+def _persist_offsets(bridges: dict[str, Bridge], store: Store, key: str = "results_offset") -> None:
     for name, b in bridges.items():
         if isinstance(b, FileBridge):
-            store.kv_set(f"results_offset:{name}", str(b.results_offset))
+            store.kv_set(f"{key}:{name}", str(b.results_offset))
+
+
+MIRROR_OFFSET_KEY = "results_offset:mirror-dest"
+
+
+def _mirror_bridges(cfg: AppConfig, store: Store) -> dict[str, Bridge]:
+    """One bridge per mirror destination, with its own results offset (a destination can also be a provider's terminal)."""
+    out: dict[str, Bridge] = {}
+    for name, m in cfg.mirrors.items():
+        if m.destination not in out:
+            off = store.kv_get(f"{MIRROR_OFFSET_KEY}:{m.destination}")
+            out[m.destination] = FileBridge(cfg.mirror_destination(name).bridge_dir, results_offset=int(off) if off else 0)
+    return out
+
+
+def mirror_latency_lines(store: Store, n: int = 50) -> list[str]:
+    """The last n mirror command timings (seconds): source event -> read -> sent -> result."""
+    import json
+    rows = store.conn.execute("SELECT ts, provider, run_id, detail FROM journal WHERE kind='mirror_latency' ORDER BY id DESC LIMIT ?", (n,)).fetchall()
+    lines = [f"{'logged (UTC)':<26} {'mirror':<10} {'source pos':<14} {'type':<8} {'ok':<5} {'src->read':>9} {'read->send':>10} {'send->result':>12} {'src->result':>11}"]
+    for r in reversed(rows):
+        d = json.loads(r["detail"])
+        cell = lambda k, w: f"{d[k]:>{w}.3f}" if isinstance(d.get(k), (int, float)) else f"{'-':>{w}}"
+        lines.append(f"{r['ts'][:26]:<26} {r['provider'].split(':', 1)[1]:<10} {(r['run_id'] or '').split(':')[-1]:<14} {d.get('type', ''):<8} {str(d.get('ok')):<5} "
+                     f"{cell('source_to_read_s', 9)} {cell('read_to_send_s', 10)} {cell('send_to_result_s', 12)} {cell('source_to_result_s', 11)}")
+    return lines
 
 
 def make_classifier(cfg: AppConfig, secrets: Secrets) -> Classifier:
@@ -215,6 +241,7 @@ def main(argv: list[str] | None = None) -> int:
     sub.add_parser("listen")
     r = sub.add_parser("run"); r.add_argument("--dry-run", action="store_true"); r.add_argument("--once", action="store_true")
     sub.add_parser("status")
+    ml = sub.add_parser("mirror-latency", help="timings of the last mirrored trade actions"); ml.add_argument("--n", type=int, default=50)
     pp = sub.add_parser("bridge-ping"); pp.add_argument("provider"); pp.add_argument("--timeout", type=float, default=10)
     bt = sub.add_parser("bridge-test"); bt.add_argument("provider"); bt.add_argument("--confirm", action="store_true"); bt.add_argument("--live", action="store_true", help="allow the test trade on a REAL account")
     rp = sub.add_parser("replay"); rp.add_argument("provider"); rp.add_argument("export_dir")
@@ -237,7 +264,13 @@ def main(argv: list[str] | None = None) -> int:
             print(f"{cid:>16}  {title}")
         return 0
     if a.cmd == "status":
-        print("\n".join(status_lines(cfg, store, _bridges(cfg, store)))); return 0
+        print("\n".join(status_lines(cfg, store, _bridges(cfg, store))))
+        if cfg.mirrors:
+            from .mirror import mirror_status_lines
+            print("\n".join(mirror_status_lines(cfg, store, _mirror_bridges(cfg, store))))
+        return 0
+    if a.cmd == "mirror-latency":
+        print("\n".join(mirror_latency_lines(store, a.n))); return 0
     if a.cmd == "journal":
         for e in reversed(store.journal_tail(a.n)):
             print(e["ts"], e["provider"], e["kind"], e["run_id"] or "", e["detail"])
@@ -266,17 +299,30 @@ def main(argv: list[str] | None = None) -> int:
         counts = replay(cfg, store, MockClassifier(), a.provider, Path(a.export_dir))
         print(counts); return 0
     if a.cmd == "run":
-        classifier = make_classifier(cfg, Secrets.from_env())
+        alerter = make_alerter(Secrets.from_env())
         bridges = _bridges(cfg, store)
         real = bridges
+        mirror_real = _mirror_bridges(cfg, store)
+        mirror_bridges = mirror_real
         if a.dry_run:
             bridges = {n: DryRunBridge(b, store, n) for n, b in bridges.items()}
+            mirror_bridges = {n: DryRunBridge(b, store, f"mirror-dest:{n}") for n, b in mirror_real.items()}
             log.warning("DRY RUN: commands are journaled, not sent")
-        trader = Trader(cfg, store, bridges, classifier, alerter=make_alerter(Secrets.from_env()))
-        trader.startup_reconcile()
+        trader = None
+        if cfg.providers:
+            trader = Trader(cfg, store, bridges, make_classifier(cfg, Secrets.from_env()), alerter=alerter)
+            trader.startup_reconcile()
+        mirrors = None
+        if cfg.mirrors:
+            from .mirror import MirrorEngine
+            mirrors = MirrorEngine(cfg, store, mirror_bridges, alerter=alerter)
         while True:
-            trader.tick()
+            if trader is not None:
+                trader.tick()
+            if mirrors is not None:
+                mirrors.tick()
             _persist_offsets(real, store)
+            _persist_offsets(mirror_real, store, MIRROR_OFFSET_KEY)
             if a.once:
                 return 0
             time.sleep(cfg.poll_interval_sec)

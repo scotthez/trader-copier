@@ -1,7 +1,9 @@
 """config.yaml (no secrets) and environment secrets."""
 from __future__ import annotations
 import os
+import re
 from pathlib import Path
+from typing import Literal
 from pydantic import BaseModel, Field, field_validator, model_validator
 import yaml
 
@@ -51,6 +53,81 @@ class ProviderConfig(BaseModel):
         return v
 
 
+class AccountConfig(BaseModel):
+    """A terminal with SignalBridge attached that is not a Telegram provider's account: a mirror destination."""
+    bridge_dir: Path
+    expected_login: int = 0             # refuse to send anything unless state.json reports this login (0 = any)
+    live: bool = False                  # must be true to send commands to a REAL account; requires expected_login
+
+    @model_validator(mode="after")
+    def _live_requires_login(self) -> "AccountConfig":
+        if self.live and not self.expected_login:
+            raise ValueError("live: true requires expected_login to be set to the exact account number")
+        return self
+
+
+class FixedPips(BaseModel):
+    fixed_pips: float = Field(gt=0)     # SL/TP this many pips from the destination's price at placement
+
+
+StopMode = Literal["copy", "none"] | FixedPips
+
+
+# Magic numbers copy-trading platforms put on the positions they copy into an account (IconFX/IconTech
+# copy trading: 2147483646). Those positions are someone else's trades and are never mirrored.
+COPY_PLATFORM_MAGICS = frozenset({2147483646})
+
+
+class MirrorSource(BaseModel):
+    login: int = Field(gt=0)            # the source account; events written by any other login are ignored
+    events_dir: Path                    # the source terminal's Common/Files folder (where CopierSource writes)
+    events_base: str = "copytrader"     # CopierSource InpEventsFileBase
+    include_magics: list[int] = Field(default_factory=lambda: [0])   # 0 = trades placed by hand; add your own EAs' magics
+    symbols: dict[str, str] = Field(default_factory=dict)            # source symbol -> destination symbol; empty = every symbol, same name
+
+    @field_validator("symbols", mode="before")
+    @classmethod
+    def _list_is_same_name(cls, v):
+        return {x: x for x in v} if isinstance(v, list) else v
+
+    @field_validator("include_magics")
+    @classmethod
+    def _some_magic(cls, v: list[int]) -> list[int]:
+        if not v:
+            raise ValueError("include_magics must list at least one magic number (0 = trades placed by hand)")
+        bad = sorted(set(v) & COPY_PLATFORM_MAGICS)
+        if bad:
+            raise ValueError(f"include_magics {bad}: that magic marks copy-trading platform positions, which are never mirrored")
+        return v
+
+
+class MirrorSizing(BaseModel):
+    mode: Literal["balance_ratio", "source_lots", "fixed_lots"] = "balance_ratio"
+    multiplier: float = Field(default=1.0, gt=0)    # balance_ratio: source lots x destination balance / source balance x this; source_lots: source lots x this
+    lots: float | None = Field(default=None, gt=0)  # fixed_lots: every trade this size
+
+    @model_validator(mode="after")
+    def _lots_for_fixed(self) -> "MirrorSizing":
+        if self.mode == "fixed_lots" and self.lots is None:
+            raise ValueError("sizing mode fixed_lots needs lots")
+        return self
+
+
+class MirrorConfig(BaseModel):
+    source: MirrorSource
+    destination: str                    # a name under accounts: (or providers:) - its bridge_dir, expected_login and live are used
+    sizing: MirrorSizing = Field(default_factory=MirrorSizing)
+    max_lots: float = Field(gt=0)       # no destination trade is larger than this
+    stop_loss: StopMode = "copy"
+    take_profit: StopMode = "copy"
+    pip_size: dict[str, float] = Field(default_factory=dict)   # destination symbol -> price of one pip, for fixed_pips (3/5-digit symbols default to 10 points)
+    mirror_closes: Literal["proportional"] = "proportional"    # a partial close on the source closes the same fraction on the destination
+    max_open_age_sec: int = 300         # a source OPEN older than this when it is read (terminal down, catching up) is not mirrored
+
+
+MIRROR_NAME = re.compile(r"^[a-z0-9_]{1,8}$")     # goes into the destination comment m:<name>:<position>, which MT5 caps at 31 chars
+
+
 class LlmConfig(BaseModel):
     provider: str = "anthropic"          # anthropic | openrouter
     model: str = "claude-opus-5"
@@ -68,7 +145,9 @@ class LlmConfig(BaseModel):
 
 
 class AppConfig(BaseModel):
-    providers: dict[str, ProviderConfig]
+    providers: dict[str, ProviderConfig] = Field(default_factory=dict)
+    accounts: dict[str, AccountConfig] = Field(default_factory=dict)    # mirror-only destination accounts
+    mirrors: dict[str, MirrorConfig] = Field(default_factory=dict)      # account -> account trade mirrors
     llm: LlmConfig = Field(default_factory=LlmConfig)
     db_path: Path = Path("tg_signal_trader.sqlite")
     session_path: Path = Path("tg_listener.session")
@@ -76,6 +155,34 @@ class AppConfig(BaseModel):
     listener_poll_sec: float = 5.0
     notify_trades: bool = True           # message every placement / fill / TP / SL / SL move / cancel / rejection via the alert bot
     terminal_alert_sec: float = 60.0     # alert (and journal) when a terminal's state.json is missing/older than this (0 = off)      # listener also fetches recent channel messages this often (0 = push updates only)
+
+    @model_validator(mode="after")
+    def _mirrors_resolve(self) -> "AppConfig":
+        clash = set(self.accounts) & set(self.providers)
+        if clash:
+            raise ValueError(f"accounts and providers share the names {sorted(clash)}; a mirror destination must be unambiguous")
+        seen: dict[tuple, str] = {}
+        for name, m in self.mirrors.items():
+            if not MIRROR_NAME.match(name):
+                raise ValueError(f"mirror name {name!r}: use 1-8 characters a-z, 0-9 or _")
+            dest = self.mirror_destination(name)    # raises for an unknown destination
+            if dest.expected_login and dest.expected_login == m.source.login:
+                raise ValueError(f"mirror {name}: destination {m.destination} is the source account {m.source.login}")
+            key = (m.source.login, str(m.source.events_dir), m.source.events_base, m.destination)
+            if key in seen:
+                raise ValueError(f"mirrors {seen[key]} and {name} copy the same source events to {m.destination}: every trade would open twice")
+            seen[key] = name
+        return self
+
+    def mirror_destination(self, mirror: str) -> AccountConfig:
+        """The destination account of a mirror, from accounts: or else a provider's terminal."""
+        dest = self.mirrors[mirror].destination
+        if dest in self.accounts:
+            return self.accounts[dest]
+        if dest in self.providers:
+            p = self.providers[dest]
+            return AccountConfig(bridge_dir=p.bridge_dir, expected_login=p.expected_login, live=p.live)
+        raise ValueError(f"mirror {mirror}: destination {dest!r} is not under accounts: or providers:")
 
 
 def load_config(path: str | Path) -> AppConfig:
