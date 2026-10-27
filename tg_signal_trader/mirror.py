@@ -3,8 +3,9 @@ account's SignalBridge, with config-driven sizing and SL/TP, and a Telegram mess
 
 Only the account owner's own trades are mirrored. A source position is mirrored when its magic is in
 `include_magics` (0 = placed by hand), its symbol is allowed, and its comment does not mark it as a
-copy-trading platform's, a signal bot's or a mirror's own trade. That last exclusion is not
-configurable.
+copy-trading platform's, a signal bot's or a mirror's own trade. Copy-trading platform positions are
+mirrored only when `source.include_copy_trades` is set (demo/learning only); the signal bot, copier
+and mirror exclusions are not configurable.
 
 Nothing is ever sent to the source account: the source side is read-only (its events file).
 
@@ -40,8 +41,9 @@ _COPY_PLATFORM_ID = re.compile(r"^[A-Za-z0-9+/_-]{20,24}={0,2}$")
 _MIRROR_COMMENT = re.compile(r"^m:[a-z0-9_]{1,8}:\d+$")
 
 
-def exclusion_reason(comment: str) -> str | None:
-    """Why a source position is someone else's trade and must not be mirrored (None = it may be)."""
+def exclusion_reason(comment: str, include_copy_trades: bool = False) -> str | None:
+    """Why a source position is someone else's trade and must not be mirrored (None = it may be).
+    include_copy_trades lets copy-trading platform positions through; the other exclusions always apply."""
     c = (comment or "").strip()
     if c.startswith("sig:"):
         return "signal_bot_trade"          # tg-signal-trader's own provider legs
@@ -49,7 +51,7 @@ def exclusion_reason(comment: str) -> str | None:
         return "copier_trade"              # CopierDestination's copies
     if _MIRROR_COMMENT.match(c):
         return "mirror_trade"              # this mirror's own trades (stops A->B->A loops)
-    if _COPY_PLATFORM_ID.match(c) and re.search(r"\d", c) and re.search(r"[A-Za-z]", c):
+    if not include_copy_trades and _COPY_PLATFORM_ID.match(c) and re.search(r"\d", c) and re.search(r"[A-Za-z]", c):
         return "copy_platform_trade"
     return None
 
@@ -484,13 +486,15 @@ class MirrorEngine:
         return True          # the destination is brought in line by _sync
 
     def _filtered(self, m: MirrorConfig, ev: SourceEvent) -> str | None:
+        copy_ok = m.source.include_copy_trades
         if ev.magic in COPY_PLATFORM_MAGICS:
-            return "copy_platform_trade"
-        if ev.magic not in m.source.include_magics:
+            if not copy_ok:
+                return "copy_platform_trade"
+        elif ev.magic not in m.source.include_magics:
             return f"magic {ev.magic} not in include_magics"
         if m.source.symbols and ev.symbol not in m.source.symbols:
             return f"symbol {ev.symbol} not in symbols"
-        return exclusion_reason(ev.comment)
+        return exclusion_reason(ev.comment, include_copy_trades=copy_ok)
 
     def _on_open(self, mirror: str, m: MirrorConfig, ev: SourceEvent, state: BridgeState | None, bridge: Bridge, block: str | None) -> bool:
         read_at = self.now_local()
@@ -723,6 +727,7 @@ def mirror_status_lines(cfg: AppConfig, store: Store, bridges: dict[str, Bridge]
         raw = store.kv_get(f"mirror_cursor:{name}")
         cur = json.loads(raw) if raw else None
         lines.append(f"[mirror {name}] source {m.source.login} ({m.source.events_base} in {m.source.events_dir}) -> {m.destination} | {armed}"
+                     + (" | INCLUDES COPY-PLATFORM TRADES (demo/learning only)" if m.source.include_copy_trades else "")
                      + (f" | reading {cur['file']}@{cur['offset']}" if cur and cur.get("file") else " | not started"))
         for mp in engine.positions(name, [OPENING, OPEN]):
             flag = f" | NEEDS A HAND CHECK: {mp.attention}" if mp.attention else ""

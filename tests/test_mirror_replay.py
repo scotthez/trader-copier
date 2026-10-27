@@ -20,12 +20,12 @@ class Alerts:
         self.sent.append(text)
 
 
-def test_replay_events_file_to_fake_bridge(tmp_path):
+def replay(tmp_path, **source):
     lines = FIXTURE.read_text().splitlines()
     events_dir = tmp_path / "Common" / "Files"; events_dir.mkdir(parents=True)
     f = events_dir / "copytrader_events_20261027.jsonl"; f.write_text("")
     cfg = AppConfig(accounts={"ftmo_demo": {"bridge_dir": str(tmp_path / "sb"), "expected_login": 1514988624}},
-                    mirrors={"icon": {"source": {"login": 4100074, "events_dir": str(events_dir)}, "destination": "ftmo_demo",
+                    mirrors={"icon": {"source": {"login": 4100074, "events_dir": str(events_dir), **source}, "destination": "ftmo_demo",
                                       "sizing": {"mode": "source_lots"}, "max_lots": 1.0}})
     cfg.mirrors["icon"].source.symbols = {"XAUUSD.p": "XAUUSD", "EURUSD.p": "EURUSD", "USDJPY.p": "USDJPY"}
     first = parse_ts(json.loads(lines[0])["ts"])
@@ -45,7 +45,11 @@ def test_replay_events_file_to_fake_bridge(tmp_path):
         for _ in range(3):
             clock["now"] += timedelta(seconds=0.5); fb.now = clock["now"]
             eng.tick()
+    return eng, store, fb, alerts
 
+
+def test_replay_events_file_to_fake_bridge(tmp_path):
+    eng, store, fb, alerts = replay(tmp_path)
     sent = [(c.type, c.symbol or c.position, c.side, c.volume, c.sl, c.tp) for c in fb.sent]
     gold, eur = fb.sent[0].cmd_id, fb.sent[2].cmd_id
     assert [c.type for c in fb.sent] == ["open_market", "modify_sltp", "open_market", "close", "close", "close"]
@@ -66,3 +70,16 @@ def test_replay_events_file_to_fake_bridge(tmp_path):
     assert "USDJPY" not in text
     assert "📥 Source opened BUY 0.1 XAUUSD.p @ 4001.35" in text and "✅ Placed 0.1 lots @ 4001.5 on ftmo_demo" in text
     assert "✂️ Closed 0.04 lots" in text and "✋ Closed 0.06 lots" in text and "✋ Closed 0.2 lots" in text
+
+
+def test_replay_with_include_copy_trades_mirrors_the_copy_platform_trade_too(tmp_path):
+    eng, store, fb, alerts = replay(tmp_path, include_copy_trades=True)
+    assert [c.type for c in fb.sent] == ["open_market", "open_market", "modify_sltp", "open_market", "close", "close", "close", "close"]
+    jpy = [c for c in fb.sent if c.symbol == "USDJPY"]
+    assert [(c.side, c.volume, c.sl, c.tp) for c in jpy] == [("SELL", 0.03, 0.0, 0.0)] and jpy[0].comment == "m:icon:88001201"
+    # the Wolves bot leg is still never mirrored
+    assert not any(c.side == "SELL" and c.symbol == "XAUUSD" for c in fb.sent)
+    assert fb.positions == [] and [mp.state for mp in eng.positions("icon")] == [CLOSED, CLOSED, CLOSED]
+    filtered = [e["detail"]["why"] for e in store.journal_tail(500) if e["kind"] == "mirror_filtered"]
+    assert filtered == ["magic 903001 not in include_magics"]
+    assert "📥 Source opened SELL 0.03 USDJPY.p" in "\n".join(alerts.sent)

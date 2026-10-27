@@ -102,11 +102,19 @@ the destination through its SignalBridge, and messaged through the alert bot. Wh
 is purely config: swap `source.login`/`events_dir` and `destination` to reverse it.
 
 What is mirrored: source positions whose magic is in `include_magics` (default `[0]`, trades you
-placed by hand; add your own EAs' magics) and, if `symbols` is set, whose symbol is listed. Never
-mirrored, whatever the config says: copy-trading platform positions (a random 20–24 character id as
-the comment, or IconTech's copy magic 2147483646), this bot's provider legs (`sig:`), CopierDestination
-copies (`copy:`) and mirror trades (`m:`). Those are journaled as `mirror_filtered`, without a message.
-Positions already open when a mirror first starts are not copied.
+placed by hand; add your own EAs' magics) and, if `symbols` is set, whose symbol is listed. Not
+mirrored by default: copy-trading platform positions (a random 20–24 character id as the comment, or
+IconTech's copy magic 2147483646). Never mirrored, whatever the config says: this bot's provider legs
+(`sig:`), CopierDestination copies (`copy:`) and mirror trades (`m:`). Those are journaled as
+`mirror_filtered`, without a message. Positions already open when a mirror first starts are not copied.
+
+`source.include_copy_trades: true` also mirrors copy-trading platform positions. **It is for demo
+accounts and learning only.** Copy-platform trades are someone else's signals: pointing this at a
+funded FTMO account (or any prop-firm account) would breach FTMO's rule against third-party signals and
+copy trading, and re-copying a provider's trades may also breach the copy platform's terms. The config
+refuses it for a destination with `live: true`, but FTMO accounts report themselves as demo, so that
+check cannot tell a free trial from a funded account: only ever use it on a free trial or plain demo.
+`tg-trader status` marks such a mirror `INCLUDES COPY-PLATFORM TRADES (demo/learning only)`.
 
 Nothing is ever sent to the source account: the mirror only reads CopierSource's events file.
 
@@ -138,6 +146,7 @@ mirrors:
       events_dir: /abs/path/to/Common/Files
       events_base: copytrader      # CopierSource InpEventsFileBase
       include_magics: [0]          # 0 = trades placed by hand
+      include_copy_trades: false   # true = also copy-platform positions (demo/learning only, see above)
       symbols: { XAUUSD.p: XAUUSD, EURUSD.p: EURUSD }   # source → destination name; omit for all symbols, same names
     destination: ftmo_demo         # a name under accounts: or providers:
     sizing: { mode: source_lots, multiplier: 1.0 }      # same lots; or balance_ratio (× dest/source balance), or fixed_lots + lots

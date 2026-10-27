@@ -82,7 +82,8 @@ StopMode = Literal["copy", "none"] | FixedPips
 
 
 # Magic numbers copy-trading platforms put on the positions they copy into an account (IconFX/IconTech
-# copy trading: 2147483646). Those positions are someone else's trades and are never mirrored.
+# copy trading: 2147483646). Those positions are someone else's trades and are not mirrored unless a
+# mirror sets source.include_copy_trades (demo/learning only; refused for a live destination).
 COPY_PLATFORM_MAGICS = frozenset({2147483646})
 
 
@@ -92,6 +93,7 @@ class MirrorSource(BaseModel):
     events_base: str = "copytrader"     # CopierSource InpEventsFileBase
     include_magics: list[int] = Field(default_factory=lambda: [0])   # 0 = trades placed by hand; add your own EAs' magics
     symbols: dict[str, str] = Field(default_factory=dict)            # source symbol -> destination symbol; empty = every symbol, same name
+    include_copy_trades: bool = False   # also mirror copy-trading platform positions (demo/learning only; refused for a live destination)
 
     @field_validator("symbols", mode="before")
     @classmethod
@@ -103,10 +105,15 @@ class MirrorSource(BaseModel):
     def _some_magic(cls, v: list[int]) -> list[int]:
         if not v:
             raise ValueError("include_magics must list at least one magic number (0 = trades placed by hand)")
-        bad = sorted(set(v) & COPY_PLATFORM_MAGICS)
-        if bad:
-            raise ValueError(f"include_magics {bad}: that magic marks copy-trading platform positions, which are never mirrored")
         return v
+
+    @model_validator(mode="after")
+    def _copy_magics_need_flag(self) -> "MirrorSource":
+        bad = sorted(set(self.include_magics) & COPY_PLATFORM_MAGICS)
+        if bad and not self.include_copy_trades:
+            raise ValueError(f"include_magics {bad}: that magic marks copy-trading platform positions; "
+                             "set include_copy_trades: true to mirror them (demo/learning only)")
+        return self
 
 
 class MirrorSizing(BaseModel):
@@ -174,6 +181,8 @@ class AppConfig(BaseModel):
             if not MIRROR_NAME.match(name):
                 raise ValueError(f"mirror name {name!r}: use 1-8 characters a-z, 0-9 or _")
             dest = self.mirror_destination(name)    # raises for an unknown destination
+            if m.source.include_copy_trades and dest.live:
+                raise ValueError(f"mirror {name}: include_copy_trades is for demo/learning only; destination {m.destination} has live: true")
             if dest.expected_login and dest.expected_login == m.source.login:
                 raise ValueError(f"mirror {name}: destination {m.destination} is the source account {m.source.login}")
             key = (m.source.login, str(m.source.events_dir), m.source.events_base, m.destination)

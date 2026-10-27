@@ -89,7 +89,7 @@ def test_config_example_parses_with_defaults(tmp_path):
     p = tmp_path / "c.yaml"; p.write_text(yaml.safe_dump(raw))
     cfg = load_config(p)
     m = cfg.mirrors["icon"]
-    assert cfg.providers == {} and m.source.include_magics == [0] and m.source.events_base == "copytrader"
+    assert cfg.providers == {} and m.source.include_magics == [0] and m.source.events_base == "copytrader" and m.source.include_copy_trades is False
     assert m.stop_loss == "copy" and m.take_profit == "copy" and m.mirror_closes == "proportional" and m.sizing.multiplier == 1.0
     assert cfg.mirror_destination("icon").expected_login == DST and cfg.mirror_destination("icon").live is False
 
@@ -174,14 +174,47 @@ def test_copy_platform_trade_is_not_mirrored_and_not_alerted(tmp_path):
     assert any(e["kind"] == "mirror_filtered" and e["detail"]["why"] == "copy_platform_trade" for e in store.journal_tail())
 
 
-def test_copy_platform_magic_is_never_mirrored_and_cannot_be_included(tmp_path):
+def test_copy_platform_magic_is_not_mirrored_by_default_and_cannot_be_included_without_the_flag(tmp_path):
     eng, store, fb, clock, alerts, f = make(tmp_path)
     write(f, opened(magic=2147483646, comment=""))
     step(eng, fb, clock)
     assert fb.sent == [] and alerts.sent == []
-    with pytest.raises(ValidationError, match="copy-trading platform"):
+    with pytest.raises(ValidationError, match="include_copy_trades"):
         mirror_cfg_model = {"source": {"login": SRC, "events_dir": "/x", "include_magics": [0, 2147483646]}, "destination": "d", "max_lots": 1}
         MirrorConfig.model_validate(mirror_cfg_model)
+
+
+def test_include_copy_trades_mirrors_copy_platform_positions(tmp_path):
+    eng, store, fb, clock, alerts, f = make(tmp_path, source={"include_copy_trades": True})
+    write(f, ev("OPEN", 1, volume=0.1, magic=2147483646, comment="6CiR8gcMDUGaIY7iGI0nXw\n        "),
+          ev("OPEN", 2, volume=0.1, magic=0, comment="kQ3J8sX0aB1cD2eF3gH4iQ=="), ev("OPEN", 3, volume=0.1, magic=0))
+    step(eng, fb, clock)
+    assert sorted(int(c.comment.split(":")[2]) for c in fb.sent) == [1, 2, 3]
+    assert not any(e["kind"] == "mirror_filtered" for e in store.journal_tail())
+    assert "INCLUDES COPY-PLATFORM TRADES" in mirror_status_lines(eng.cfg, store, {"demo": fb})[0]
+
+
+def test_include_copy_trades_keeps_the_other_exclusions(tmp_path):
+    eng, store, fb, clock, alerts, f = make(tmp_path, source={"include_copy_trades": True})
+    write(f, ev("OPEN", 1, volume=0.1, magic=0, comment="sig:wolves:812:L1"), ev("OPEN", 2, volume=0.1, magic=0, comment="copy:123456"),
+          ev("OPEN", 3, volume=0.1, magic=0, comment="m:own:501"), ev("OPEN", 4, volume=0.1, magic=903001))
+    step(eng, fb, clock)
+    assert fb.sent == []
+    why = sorted(e["detail"]["why"] for e in store.journal_tail() if e["kind"] == "mirror_filtered")
+    assert why == ["copier_trade", "magic 903001 not in include_magics", "mirror_trade", "signal_bot_trade"]
+
+
+def test_include_copy_trades_is_refused_for_a_live_destination():
+    m = {"source": {"login": SRC, "events_dir": "/x", "include_copy_trades": True}, "destination": "demo", "max_lots": 1}
+    with pytest.raises(ValidationError, match="demo/learning only"):
+        AppConfig(accounts={"demo": {"bridge_dir": "/d", "expected_login": DST, "live": True}}, mirrors={"own": m})
+    cfg = AppConfig(accounts={"demo": {"bridge_dir": "/d", "expected_login": DST}}, mirrors={"own": m})
+    assert cfg.mirrors["own"].source.include_copy_trades is True
+
+
+def test_exclusion_reason_copy_flag():
+    assert exclusion_reason("kQ3J8sX0aB1cD2eF3gH4iQ==", include_copy_trades=True) is None
+    assert exclusion_reason("sig:wolves:812:L1", include_copy_trades=True) == "signal_bot_trade"
 
 
 def test_magic_filter(tmp_path):
@@ -535,7 +568,7 @@ def test_status_lines(tmp_path):
     write(f, opened())
     step(eng, fb, clock)
     lines = mirror_status_lines(eng.cfg, store, {"demo": fb})
-    assert lines[0].startswith(f"[mirror own] source {SRC}") and "armed (demo)" in lines[0]
+    assert lines[0].startswith(f"[mirror own] source {SRC}") and "armed (demo)" in lines[0] and "COPY-PLATFORM" not in lines[0]
     assert "source #501 XAUUSD BUY 1/1 ->" in lines[1] and "0.5/0.5 OPEN" in lines[1]
 
 
