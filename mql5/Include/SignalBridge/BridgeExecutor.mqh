@@ -24,7 +24,7 @@ bool ParseCommand(const string json, BridgeCommand &c)
    c.price = 0; c.expires_at = 0; c.position = 0; c.order = 0; c.order_kind = "LIMIT";
    if(!JsonGetString(json, "cmd_id", c.cmd_id) || c.cmd_id == "") return false;
    if(!JsonGetString(json, "type", c.type)) return false;
-   if(c.type != "ping" && c.type != "open_market" && c.type != "open_pending" && c.type != "modify_sl" && c.type != "close" && c.type != "cancel") return false;
+   if(c.type != "ping" && c.type != "open_market" && c.type != "open_pending" && c.type != "modify_sl" && c.type != "modify_sltp" && c.type != "close" && c.type != "cancel") return false;
    string s; long l; double d;
    if(JsonGetString(json, "symbol", s)) c.symbol = s;
    if(JsonGetString(json, "side", s)) c.side = s;
@@ -131,9 +131,26 @@ private:
       m_trade.PositionModify(c.position, sl, cur_tp);
       return Accepted() || m_trade.ResultRetcode() == TRADE_RETCODE_NO_CHANGES;
    }
+   // Sets SL and TP exactly as given (0 removes one); used by the account mirror, which copies both.
+   bool TryModifySlTp(const BridgeCommand &c)
+   {
+      if(!PositionSelectByTicket(c.position)) { m_precond_fail = "position #" + IntegerToString((long)c.position) + " not found (yet)"; return false; }
+      string sym = PositionGetString(POSITION_SYMBOL);
+      double sl = NormalizeStop(sym, c.sl), tp = NormalizeStop(sym, c.tp);
+      if(MathAbs(PositionGetDouble(POSITION_SL) - sl) < 1e-9 && MathAbs(PositionGetDouble(POSITION_TP) - tp) < 1e-9) return true;   // no-op is success
+      m_trade.PositionModify(c.position, sl, tp);
+      return Accepted() || m_trade.ResultRetcode() == TRADE_RETCODE_NO_CHANGES;
+   }
    bool TryClose(const BridgeCommand &c)
    {
       if(!PositionSelectByTicket(c.position)) { m_precond_fail = "position #" + IntegerToString((long)c.position) + " not found (yet)"; return false; }
+      if(c.volume > 0 && c.volume < PositionGetDouble(POSITION_VOLUME) - 1e-9)
+      {
+         // Partial close of `volume` lots. DONE_PARTIAL is accepted as done: retrying would close
+         // `volume` again on top of what already filled; the caller reads the remaining volume from state.
+         m_trade.PositionClosePartial(c.position, c.volume);
+         return Accepted();
+      }
       m_trade.PositionClose(c.position);
       if(!Accepted()) return false;
       // A DONE_PARTIAL retcode is the trade server's own word that volume remains open — retry.
@@ -173,6 +190,7 @@ public:
          if(c.type == "open_market")       ok = TryOpenMarket(c);
          else if(c.type == "open_pending") ok = TryOpenPending(c);
          else if(c.type == "modify_sl")    ok = TryModifySl(c);
+         else if(c.type == "modify_sltp")  ok = TryModifySlTp(c);
          else if(c.type == "close")        ok = TryClose(c);
          else if(c.type == "cancel")       ok = TryCancel(c);
          if(m_precond_fail != "")
@@ -188,7 +206,7 @@ public:
          }
          if(ok)
          {
-            if(c.type == "close" || c.type == "modify_sl") { r.position = c.position; r.order = 0; }
+            if(c.type == "close" || c.type == "modify_sl" || c.type == "modify_sltp") { r.position = c.position; r.order = 0; }
             if(c.type == "cancel") { r.order = c.order; r.position = 0; }
             return;
          }

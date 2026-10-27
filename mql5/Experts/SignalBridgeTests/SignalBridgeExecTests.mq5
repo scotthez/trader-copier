@@ -94,8 +94,34 @@ void OnTick()
          PositionSelectByTicket(g_pos);
          AssertEqDbl(new_sl, PositionGetDouble(POSITION_SL), 1e-9, "exec: sl applied");
          break; }
-      case 7: { // close
+      case 7: { // modify_sltp sets both, then partial close, then close (the remainder)
          BridgeCommand c; BridgeResult r;
+         double new_sl = NormalizeDouble(SymbolInfoDouble(_Symbol, SYMBOL_BID) - 400 * _Point, _Digits);
+         double new_tp = NormalizeDouble(SymbolInfoDouble(_Symbol, SYMBOL_ASK) + 600 * _Point, _Digits);
+         AssertTrue(ParseCommand("{\"cmd_id\":\"m1:7:1\",\"type\":\"modify_sltp\",\"position\":" + IntegerToString((long)g_pos) + ",\"sl\":" + DoubleToString(new_sl, _Digits) + ",\"tp\":" + DoubleToString(new_tp, _Digits) + "}", c), "exec: parse modify_sltp");
+         g_exec.Execute(c, r);
+         AssertTrue(r.ok && r.position == g_pos, "exec: modify_sltp ok");
+         PositionSelectByTicket(g_pos);
+         AssertEqDbl(new_sl, PositionGetDouble(POSITION_SL), 1e-9, "exec: modify_sltp sl applied");
+         AssertEqDbl(new_tp, PositionGetDouble(POSITION_TP), 1e-9, "exec: modify_sltp tp applied");
+         ParseCommand("{\"cmd_id\":\"m1:7:2\",\"type\":\"modify_sltp\",\"position\":" + IntegerToString((long)g_pos) + ",\"sl\":" + DoubleToString(new_sl, _Digits) + ",\"tp\":0}", c);
+         g_exec.Execute(c, r);
+         PositionSelectByTicket(g_pos);
+         AssertTrue(r.ok && PositionGetDouble(POSITION_TP) == 0, "exec: modify_sltp tp 0 removes the TP");
+         AssertEqDbl(new_sl, PositionGetDouble(POSITION_SL), 1e-9, "exec: modify_sltp keeps the given sl");
+         ParseCommand("{\"cmd_id\":\"m1:7:3\",\"type\":\"close\",\"position\":" + IntegerToString((long)g_pos) + ",\"volume\":0.04}", c);
+         g_exec.Execute(c, r);
+         AssertTrue(r.ok, "exec: partial close ok");
+         AssertTrue(PositionSelectByTicket(g_pos), "exec: position still open after partial close");
+         AssertEqDbl(0.06, PositionGetDouble(POSITION_VOLUME), 1e-9, "exec: partial close left 0.06");
+         ParseCommand("{\"cmd_id\":\"m1:7:4\",\"type\":\"close\",\"position\":" + IntegerToString((long)g_pos) + ",\"volume\":0.06}", c);
+         g_exec.Execute(c, r);
+         AssertTrue(r.ok && !PositionSelectByTicket(g_pos), "exec: close with volume = all closes the whole position");
+         // reopen for the plain close below
+         ParseCommand("{\"cmd_id\":\"m1:7:5\",\"type\":\"open_market\",\"symbol\":\"" + _Symbol + "\",\"side\":\"BUY\",\"volume\":0.10,\"sl\":0,\"tp\":0,\"comment\":\"m:t:1\"}", c);
+         g_exec.Execute(c, r);
+         AssertTrue(r.ok, "exec: reopen for close test");
+         g_pos = r.position;
          ParseCommand("{\"cmd_id\":\"s1:L1:3\",\"type\":\"close\",\"position\":" + IntegerToString((long)g_pos) + "}", c);
          g_exec.Execute(c, r);
          AssertTrue(r.ok, "exec: close ok");
