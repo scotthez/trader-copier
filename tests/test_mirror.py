@@ -6,7 +6,7 @@ import yaml
 from pydantic import ValidationError
 from tg_signal_trader.bridge import FakeBridge, SymbolSpec, fmt_ts
 from tg_signal_trader.config import AppConfig, MirrorConfig, load_config
-from tg_signal_trader.mirror import (MirrorEngine, exclusion_reason, mirror_stops, mirror_volume, mirror_status_lines,
+from tg_signal_trader.mirror import (MirrorEngine, exclusion_reason, mirror_event_line, gap_pips, mirror_stops, mirror_volume, mirror_status_lines,
                                      OPEN, OPENING, CLOSED, FAILED)
 from tg_signal_trader.store import Store
 
@@ -619,3 +619,20 @@ def test_bridge_ping_reaches_a_mirror_destination(tmp_path, capsys):
     assert main(["--config", str(p), "bridge-ping", "nope"]) == 1 and "known: dest_demo" in capsys.readouterr().out
     assert main(["--config", str(p), "bridge-ping", "dest_demo", "--timeout", "0.2"]) == 1      # no EA here: no pong
     assert "NO RESPONSE" in capsys.readouterr().out and (tmp_path / "sb" / "commands.jsonl").exists()
+
+
+def test_placed_and_closed_lines_show_timing_and_price_gap():
+    lat = {"source_to_read_s": 0.312, "read_to_send_s": 0.004, "send_to_result_s": 1.081, "source_to_result_s": 1.397}
+    line = mirror_event_line("mirror_placed", {"volume": 0.1, "price": 1.08012, "destination": "demo", "ticket": 9, "latency": lat, "gap_pips": 1.2})
+    assert line == "✅ Placed 0.1 lots @ 1.08012 on demo (#9) · 1.2 pips worse than source\n⏱ 1.40 s after the source (read 0.31 · send 0.00 · fill 1.08)"
+    closed = mirror_event_line("mirror_closed", {"volume": 0.1, "price": 1.081, "pl": 8.8, "left": 0, "latency": lat})
+    assert closed.endswith("· P/L ≈ +8.80\n⏱ 1.40 s after the source (read 0.31 · send 0.00 · fill 1.08)")
+    # no latency / gap recorded (older journal rows): the line is unchanged
+    assert mirror_event_line("mirror_placed", {"volume": 0.1, "price": 1.08, "destination": "demo", "ticket": 9}) == "✅ Placed 0.1 lots @ 1.08 on demo (#9)"
+    assert "better than source" in mirror_event_line("mirror_placed", {"volume": 0.1, "price": 1.08, "destination": "d", "ticket": 1, "gap_pips": -0.4})
+
+
+def test_gap_pips_sign_follows_the_side():
+    spec = SymbolSpec(bid=1.08, ask=1.08002, digits=5, point=0.00001, volume_step=0.01, volume_min=0.01, volume_max=50, tick_value=1, tick_size=0.00001, trade_allowed=True)
+    assert gap_pips("BUY", 1.08000, 1.08012, spec) == 1.2 and gap_pips("SELL", 1.08000, 1.08012, spec) == -1.2
+    assert gap_pips("BUY", 0, 1.08, spec) is None and gap_pips("BUY", 1.08, 1.08, None) is None

@@ -227,6 +227,31 @@ def _stops(sl: float, tp: float) -> str:
     return f"SL {_fmt(sl) if sl else 'none'} · TP {_fmt(tp) if tp else 'none'}"
 
 
+def _timing(d: dict) -> str:
+    """'⏱ 1.4 s after the source (read 0.31 · send 0.01 · fill 1.08)' from a latency dict; '' without one."""
+    lat = d.get("latency") or {}
+    if "source_to_result_s" not in lat:
+        return ""
+    parts = [f"{name} {lat[key]:.2f}" for name, key in (("read", "source_to_read_s"), ("send", "read_to_send_s"), ("fill", "send_to_result_s"))
+             if key in lat]
+    return f"\n⏱ {lat['source_to_result_s']:.2f} s after the source" + (f" ({' · '.join(parts)})" if parts else "")
+
+
+def _gap(d: dict) -> str:
+    """Destination fill vs the source's price, in pips (10 points), signed so + is worse for the trade."""
+    if d.get("gap_pips") is None:
+        return ""
+    g = d["gap_pips"]
+    return f" · {abs(g):.1f} pips {'worse' if g > 0 else 'better'} than source" if abs(g) >= 0.05 else " · same price as source"
+
+
+def gap_pips(side: str, source_price: float, fill_price: float, spec: SymbolSpec | None) -> float | None:
+    if spec is None or spec.point <= 0 or not source_price or not fill_price:
+        return None
+    sign = 1 if side == "BUY" else -1
+    return round(sign * (fill_price - source_price) / (10 * spec.point), 1)
+
+
 def mirror_event_line(kind: str, d: dict) -> str | None:
     """One message line for a mirror journal event, or None for events that are journal-only."""
     if kind == "mirror_source_open":
@@ -234,7 +259,7 @@ def mirror_event_line(kind: str, d: dict) -> str | None:
     if kind == "mirror_open_sent":
         return f"➡️ Placing {_fmt(d['volume'])} lots {d['dest_symbol']} on {d['destination']} ({_stops(d['sl'], d['tp'])})"
     if kind == "mirror_placed":
-        return f"✅ Placed {_fmt(d['volume'])} lots @ {_fmt(d['price'])} on {d['destination']} (#{d['ticket']})"
+        return f"✅ Placed {_fmt(d['volume'])} lots @ {_fmt(d['price'])} on {d['destination']} (#{d['ticket']}){_gap(d)}{_timing(d)}"
     if kind == "mirror_rejected":
         return f"⛔ Not mirrored: {_reason(d['reason'])}"
     if kind == "mirror_open_failed":
@@ -248,9 +273,9 @@ def mirror_event_line(kind: str, d: dict) -> str | None:
     if kind == "mirror_closed":
         pl = f" · P/L ≈ {d['pl']:+.2f}" if d.get("pl") is not None else ""
         if d.get("left"):
-            return f"✂️ Closed {_fmt(d['volume'])} lots @ {_fmt(d['price'])} ({_fmt(d['left'])} left){pl}"
+            return f"✂️ Closed {_fmt(d['volume'])} lots @ {_fmt(d['price'])} ({_fmt(d['left'])} left){pl}{_timing(d)}"
         total = f" · trade P/L ≈ {d['total']:+.2f}" if d.get("total") is not None and d.get("partial_before") else ""
-        return f"✋ Closed {_fmt(d['volume'])} lots @ {_fmt(d['price'])}{pl}{total}"
+        return f"✋ Closed {_fmt(d['volume'])} lots @ {_fmt(d['price'])}{pl}{total}{_timing(d)}"
     if kind == "mirror_dest_closed":
         how = {"SL": "🛑 Destination hit its SL", "TP": "🎯 Destination hit its TP"}.get(d.get("reason"), "✋ Destination position closed outside the mirror")
         price = f" @ {_fmt(d['price'])}" if d.get("price") else ""
@@ -577,7 +602,8 @@ class MirrorEngine:
                 continue
             kind, fields = mp.inflight_kind, mp.inflight_fields
             mp.inflight_cmd, mp.inflight_kind, mp.inflight_fields = None, None, {}
-            self._journal(mirror, "mirror_latency", {"cmd_id": r.cmd_id, "type": kind, "ok": r.ok, **self._latency(mp)}, mp)
+            lat = self._latency(mp)
+            self._journal(mirror, "mirror_latency", {"cmd_id": r.cmd_id, "type": kind, "ok": r.ok, **lat}, mp)
             spec = state.symbols.get(mp.dest_symbol) if state else None
             dest = self.cfg.mirrors[mirror].destination
             if kind == "open":
@@ -587,7 +613,8 @@ class MirrorEngine:
                     if r.retcode_text == "dry-run":
                         mp.reason = "dry-run"     # no real destination position to watch
                     self._journal(mirror, "mirror_placed", {"cmd_id": r.cmd_id, "volume": mp.dest_volume, "price": r.fill_price,
-                                                            "ticket": mp.dest_ticket, "destination": dest}, mp)
+                                                            "ticket": mp.dest_ticket, "destination": dest, "latency": lat,
+                                                            "gap_pips": gap_pips(mp.side, mp.source_open_price, r.fill_price, spec)}, mp)
                 else:
                     mp.state, mp.reason = FAILED, r.retcode_text
                     self._journal(mirror, "mirror_open_failed", {"cmd_id": r.cmd_id, "retcode": r.retcode, "text": r.retcode_text}, mp)
@@ -601,7 +628,7 @@ class MirrorEngine:
                 if mp.dest_volume <= 1e-9:
                     mp.state, mp.dest_volume = CLOSED, 0.0
                 self._journal(mirror, "mirror_closed", {"cmd_id": r.cmd_id, "volume": closed, "price": price, "pl": pl, "left": mp.dest_volume,
-                                                        "total": mp.realised, "partial_before": partial_before}, mp)
+                                                        "total": mp.realised, "partial_before": partial_before, "latency": lat}, mp)
             elif r.ok and kind == "sltp":
                 mp.sl, mp.tp = fields["sl"], fields["tp"]
                 self._journal(mirror, "mirror_sltp_set", {"cmd_id": r.cmd_id, "sl": mp.sl, "tp": mp.tp}, mp)

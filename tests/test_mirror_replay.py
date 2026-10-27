@@ -69,6 +69,9 @@ def test_replay_events_file_to_fake_bridge(tmp_path):
     text = "\n".join(alerts.sent)
     assert "USDJPY" not in text
     assert "📥 Source opened BUY 0.1 XAUUSD.p @ 4001.35" in text and "✅ Placed 0.1 lots @ 4001.5 on ftmo_demo" in text
+    # placement messages carry the price gap vs the source and the time from the source event to the fill
+    assert "✅ Placed 0.1 lots @ 4001.5 on ftmo_demo (#" in text and "· 1.5 pips worse than source" in text
+    assert text.count("s after the source (read ") == 5          # 2 placements + 3 closes (the SL/TP change has no timing line)
     assert "✂️ Closed 0.04 lots" in text and "✋ Closed 0.06 lots" in text and "✋ Closed 0.2 lots" in text
 
 
