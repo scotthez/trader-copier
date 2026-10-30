@@ -23,6 +23,7 @@ providers:
     telegram_chat: 0
     bridge_dir: /home/mt5/terminals/icontech/MQL5/Files/signalbridge
     risk_pct_per_leg: 1.0
+    size_from: equity                   # size lots off equity (balance + floating P&L), so they scale with the account
     symbols: { XAUUSD: XAUUSD }
     sl_range: { XAUUSD: [1, 60] }
 accounts: {}                       # mirror-only destinations: name: { bridge_dir, expected_login, live }

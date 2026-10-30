@@ -14,6 +14,7 @@ class ProviderConfig(BaseModel):
     telegram_chat: int
     bridge_dir: Path
     risk_pct_per_leg: float = 1.0
+    size_from: str = "balance"                      # "balance" (closed funds) or "equity" (balance + floating P&L); lots risk risk_pct_per_leg of this
     symbols: dict[str, str]                         # canonical -> broker symbol
     sl_range: dict[str, tuple[float, float]]        # canonical -> (min, max) SL distance in price units
     min_volume: dict[str, float] = Field(default_factory=dict)   # canonical -> minimum lots per leg, applied even above risk_pct_per_leg
@@ -35,6 +36,13 @@ class ProviderConfig(BaseModel):
         if self.live and not self.expected_login:
             raise ValueError("live: true requires expected_login to be set to the exact account number")
         return self
+
+    @field_validator("size_from")
+    @classmethod
+    def _known_size_from(cls, v: str) -> str:
+        if v not in ("balance", "equity"):
+            raise ValueError("size_from must be 'balance' or 'equity'")
+        return v
 
     @field_validator("ignore_patterns")
     @classmethod

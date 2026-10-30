@@ -651,3 +651,27 @@ def test_weekend_market_closed_cancel_does_not_flood():
     fb.send = real_send                                   # market opens: the next retry succeeds
     clock["local"] += timedelta(minutes=16); fb.now = clock["local"]; tr.tick(); tr.tick()
     assert all(l.state == LegState.CANCELLED for l in store.get_run("wolves:190").legs)
+
+
+def _set_account(fb, balance, equity):
+    fb.account.balance, fb.account.equity, fb.account.margin_free = balance, equity, equity   # no open margin (keeps the margin guard happy)
+
+
+def test_sizing_can_scale_from_equity_instead_of_balance():
+    # size_from equity reads equity, not balance; default stays on balance
+    tr, store, fb, _ = make(entries={ENTRY: _ex()}, size_from="equity", min_margin_level_pct=0)
+    _set_account(fb, 70000.0, 70022.0)
+    inbox(store, ENTRY, 200); tr.tick()
+    by_equity = store.get_run("wolves:200").legs[0].volume
+    assert by_equity > 0
+    # equity differs sharply from balance: equity mode follows equity (half the equity -> about half the lots)
+    tr3, store3, fb3, _ = make(entries={ENTRY: _ex()}, size_from="equity", min_margin_level_pct=0)
+    _set_account(fb3, 70000.0, 35000.0)
+    inbox(store3, ENTRY, 202); tr3.tick()
+    half = store3.get_run("wolves:202").legs[0].volume
+    assert 0 < half < by_equity
+    # default (balance) mode ignores the floating loss: same 70k balance -> same big size as equity@70k
+    tr2, store2, fb2, _ = make(entries={ENTRY: _ex()}, min_margin_level_pct=0)
+    _set_account(fb2, 70000.0, 35000.0)
+    inbox(store2, ENTRY, 201); tr2.tick()
+    assert abs(store2.get_run("wolves:201").legs[0].volume - by_equity) < 1e-9

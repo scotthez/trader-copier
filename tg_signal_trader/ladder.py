@@ -85,12 +85,13 @@ def place_run(run: SignalRun, cfg: ProviderConfig, state: BridgeState, bridge: B
             events.append(_ev("entry_taken_at_market", run, order=kind, entry=sig.entry_zone[0], price=market))
     entry_ref = market if at_market else sig.entry_zone[0]
     expires = None if at_market else fmt_ts(_local_naive(sig.received_at) + timedelta(hours=cfg.pending_ttl_hours))
+    base = state.account.equity if cfg.size_from == "equity" else state.account.balance
     for leg in run.legs:
         try:
             floor = cfg.min_volume.get(sig.symbol, 0.0)
-            leg.volume = leg_volume(state.account.balance, cfg.risk_pct_per_leg, entry_ref, sig.sl, spec.sizing(), floor)
+            leg.volume = leg_volume(base, cfg.risk_pct_per_leg, entry_ref, sig.sl, spec.sizing(), floor)
             if floor > 0:
-                by_risk = leg_volume(state.account.balance, cfg.risk_pct_per_leg, entry_ref, sig.sl, spec.sizing())
+                by_risk = leg_volume(base, cfg.risk_pct_per_leg, entry_ref, sig.sl, spec.sizing())
                 if leg.volume > by_risk:
                     events.append(_ev("leg_volume_raised", run, leg=leg.n, by_risk=by_risk, volume=leg.volume, min_volume=floor))
         except ValueError as e:
