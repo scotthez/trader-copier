@@ -214,6 +214,8 @@ MIRROR_REASONS = {
     "max_lots_below_volume_min": "max_lots is below the broker's minimum lot",
     "login_mismatch": "destination MT5 logged into the wrong account",
     "real_account_not_armed": "destination is a REAL account but live: false",
+    "daily_loss_stop": "FTMO daily loss limit reached - no new trades until the next day",
+    "total_loss_stop": "FTMO total loss limit reached - no new trades",
 }
 
 
@@ -316,6 +318,7 @@ class MirrorEngine:
         self._waiting: dict[str, str] = {}             # mirror -> why its events are held
         self._waiting_since: dict[str, datetime] = {}  # mirror -> first tick its events were held
         self._blocked_notice: dict[str, str] = {}      # destination -> arming block already journaled
+        self._loss_halted: set[str] = set()            # "dest|date|kind" already alerted today
 
     def _on_journal(self, provider: str, kind: str, detail: dict, run_id: str | None) -> None:
         if provider.startswith("mirror:"):
@@ -351,6 +354,50 @@ class MirrorEngine:
         if state.account.trade_mode == "REAL" and not dest.live:
             return "real_account_not_armed: set live: true and expected_login for this destination"
         return None
+
+    def _loss_block(self, destination: str, state: BridgeState | None) -> str | None:
+        """FTMO guard: why NO new mirrored open may go to this destination now (None = clear). The day's
+        start equity is recorded once per day; the total baseline is initial_equity or the first equity
+        seen. Only new opens are paused - existing positions are still managed and closed."""
+        if state is None:
+            return None
+        acc = self.cfg.accounts.get(destination)
+        if acc is None:
+            return None
+        eq = state.account.equity
+        if eq <= 0:
+            return None
+        today = self.now_local().date().isoformat()
+        if acc.daily_loss_stop_pct > 0:
+            key = f"mirror_sod:{destination}:{today}"
+            sod = self.store.kv_get(key)
+            if sod is None:
+                self.store.kv_set(key, str(eq)); sod = str(eq)
+            sod_v = float(sod)
+            if sod_v > 0 and (sod_v - eq) / sod_v * 100 >= acc.daily_loss_stop_pct:
+                self._loss_alert(destination, "daily", today, acc.daily_loss_stop_pct, (sod_v - eq) / sod_v * 100)
+                return "daily_loss_stop"
+        if acc.max_total_loss_pct > 0:
+            key = f"mirror_init:{destination}"
+            base = acc.initial_equity if acc.initial_equity > 0 else None
+            if base is None:
+                stored = self.store.kv_get(key)
+                if stored is None:
+                    self.store.kv_set(key, str(eq)); stored = str(eq)
+                base = float(stored)
+            if base > 0 and (base - eq) / base * 100 >= acc.max_total_loss_pct:
+                self._loss_alert(destination, "total", today, acc.max_total_loss_pct, (base - eq) / base * 100)
+                return "total_loss_stop"
+        return None
+
+    def _loss_alert(self, destination: str, kind: str, today: str, limit: float, down: float) -> None:
+        tag = f"{destination}|{today}|{kind}" if kind == "daily" else f"{destination}|{kind}"
+        if tag in self._loss_halted:
+            return
+        self._loss_halted.add(tag)
+        word = "today" if kind == "daily" else "total"
+        self.alerter.send(f"⛔ FTMO {kind} loss limit on {destination}: down {down:.1f}% {word} "
+                          f"(limit {limit:g}%). Pausing new mirrored trades; open positions are still managed.")
 
     def _unavailable(self, state: BridgeState | None) -> str | None:
         if state is None:
@@ -553,6 +600,9 @@ class MirrorEngine:
         self._resume(mirror)
         if block:
             return self._reject(mirror, ev, block.split(":")[0], detail=block)
+        loss = self._loss_block(m.destination, state)
+        if loss:
+            return self._reject(mirror, ev, loss)
         spec = state.symbols.get(dest_symbol)
         if spec is None:
             return self._reject(mirror, ev, "no_quote", dest_symbol=dest_symbol)

@@ -66,6 +66,9 @@ class AccountConfig(BaseModel):
     bridge_dir: Path
     expected_login: int = 0             # refuse to send anything unless state.json reports this login (0 = any)
     live: bool = False                  # must be true to send commands to a REAL account; requires expected_login
+    daily_loss_stop_pct: float = 0.0    # pause NEW mirrored opens when equity is down this %% from the day's start (FTMO daily; 0 = off)
+    max_total_loss_pct: float = 0.0     # pause NEW mirrored opens when equity is down this %% from initial_equity (FTMO total; 0 = off)
+    initial_equity: float = 0.0         # FTMO starting balance for the total limit; 0 = use the first equity the bot sees
 
     @model_validator(mode="after")
     def _live_requires_login(self) -> "AccountConfig":

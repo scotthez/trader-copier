@@ -26,7 +26,8 @@ providers:
     size_from: equity                   # size lots off equity (balance + floating P&L), so they scale with the account
     symbols: { XAUUSD: XAUUSD }
     sl_range: { XAUUSD: [1, 60] }
-accounts: {}                       # mirror-only destinations: name: { bridge_dir, expected_login, live }
+accounts: {}                       # mirror-only destinations: name: { bridge_dir, expected_login, live,
+                                   #   daily_loss_stop_pct, max_total_loss_pct, initial_equity }  <- FTMO limits (0 = off)
 mirrors: {}                        # account -> account copies of your own trades; see README "Mirror one of my accounts to another"
 llm:
   provider: anthropic             # anthropic | openrouter (OPENROUTER_API_KEY / OPENROUTER_MODEL in .env)

@@ -636,3 +636,37 @@ def test_gap_pips_sign_follows_the_side():
     spec = SymbolSpec(bid=1.08, ask=1.08002, digits=5, point=0.00001, volume_step=0.01, volume_min=0.01, volume_max=50, tick_value=1, tick_size=0.00001, trade_allowed=True)
     assert gap_pips("BUY", 1.08000, 1.08012, spec) == 1.2 and gap_pips("SELL", 1.08000, 1.08012, spec) == -1.2
     assert gap_pips("BUY", 0, 1.08, spec) is None and gap_pips("BUY", 1.08, 1.08, None) is None
+
+
+# ---- FTMO loss cutoff on the mirror destination --------------------------------------------------
+
+def test_daily_loss_cutoff_pauses_new_mirrored_opens(tmp_path):
+    eng, store, fb, clock, alerts, path = make(tmp_path)
+    # set the FTMO daily limit on the destination account
+    eng.cfg.accounts["demo"].daily_loss_stop_pct = 5.0
+    # day starts at 50,000 equity (recorded on the first open attempt)
+    write(path, opened()); step(eng, fb, clock)
+    assert any(p.state in (OPEN, OPENING) for p in eng.positions("own"))     # first trade goes through, sod=50000 recorded
+    # account now down 6% on the day -> over the 5% limit
+    fb.account.equity = 47_000.0
+    write(path, ev("OPEN", 777, volume=1.0, sl=3990.0, tp=4020.0)); step(eng, fb, clock)
+    assert eng.get("own", 777) is None                                       # not mirrored
+    rej = [e for e in store.journal_tail(50) if e["kind"] == "mirror_rejected" and e["detail"].get("reason") == "daily_loss_stop"]
+    assert rej and any("FTMO daily loss limit" in m for m in alerts.sent)
+
+
+def test_total_loss_cutoff_uses_initial_equity(tmp_path):
+    eng, store, fb, clock, alerts, path = make(tmp_path)
+    eng.cfg.accounts["demo"].max_total_loss_pct = 10.0
+    eng.cfg.accounts["demo"].initial_equity = 70_000.0
+    fb.account.equity = 62_000.0                                             # down 11.4% from 70k -> over 10%
+    write(path, opened()); step(eng, fb, clock)
+    assert eng.get("own", 501) is None
+    assert any("FTMO total loss limit" in m for m in alerts.sent)
+
+
+def test_no_cutoff_when_limits_are_zero(tmp_path):
+    eng, store, fb, clock, alerts, path = make(tmp_path)   # defaults: both 0 = off
+    fb.account.equity = 10_000.0                            # 80% down but no limits set
+    write(path, opened()); step(eng, fb, clock)
+    assert any(p.state in (OPEN, OPENING) for p in eng.positions("own"))
